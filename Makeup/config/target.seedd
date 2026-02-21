@@ -1,0 +1,16 @@
+include Makefile.acsubst.bit-babbler
+
+seedd_TYPE = EXECUTABLE
+seedd_LANGUAGE = C++
+seedd_OBJS = seedd.o
+seedd_VPATHS = %.cpp,$(srcdir)/src %.c,$(srcdir)/src
+seedd_INSTALLDIR = $(bindir)
+seedd_CPPFLAGS = $(PTHREAD_CPPFLAGS) -I$(srcdir)/include $(USB_CPPFLAGS)
+seedd_LDFLAGS = $(PTHREAD_LDFLAGS) $(USB_LDFLAGS)
+seedd_LIBS = $(USB_LIBS) $(UDEV_LIBS)
+
+# See the comment in target.bbctl for why we need CRT110_LIBS here.
+CRT110_LIBS = stdc++ winpthread mingwex mingw32 msvcr110
+
+seedd_PE_LDFLAGS = -Wl,--stack,8388608
+seedd_PE_LIBS = wsock32 ws2_32 $(CRT110_LIBS)

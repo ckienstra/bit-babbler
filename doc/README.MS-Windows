@@ -1,0 +1,164 @@
+
+The bit-babbler source can be built for Windows systems using the mingw-w64
+toolchain, which provides implementations for some of the POSIX features
+that we still use at present, even when we are building for that platform.
+
+
+---------------------------------------------------------------------------
+
+If you trust us to supply pre-built binaries, we make those available
+for 64-bit Windows:
+
+  http://www.bitbabbler.org/downloads/msw/bit-babbler-0.9_win64.zip
+  http://www.bitbabbler.org/downloads/msw/bit-babbler-0.9_win64.zip.asc
+
+and for 32-bit Windows:
+
+  http://www.bitbabbler.org/downloads/msw/bit-babbler-0.9_win32.zip
+  http://www.bitbabbler.org/downloads/msw/bit-babbler-0.9_win32.zip.asc
+
+Both of those should verify as being signed by the same key that this
+source package was signed with:
+
+ pub 4096R/125831AE66E70556 2015-11-23
+ Key fingerprint = 8EAF 7354 2433 9DDD FE83 5628 1258 31AE 66E7 0556
+ uid BitBabbler Sales <sales@bitbabbler.org>
+ uid BitBabbler Support <support@bitbabbler.org>
+
+
+If you use those, you will still need to follow the instructions below
+for "Installing it on the Windows host system", to install the WinUSB
+driver and msvcr110 if your system doesn't already have it, but you can
+skip the next few sections on building it from source.
+
+
+---------------------------------------------------------------------------
+
+The following describes cross-compiling it on a Debian Stretch system with
+mingw-w64 4.9.2, but the same instructions should be broadly applicable
+elsewhere too.  To build it natively on a Windows system you will probably
+also need msys or similar support installed too, for support needed by
+autotools build systems.
+
+First we need a Windows build of libusb-1.0 to be available.
+
+Suitable source for that can be fetched from:
+
+  http://www.bitbabbler.org/downloads/msw/libusb-1.0.20.tar.bz2
+
+Which is an unpatched copy of the upstream 1.0.20 release that has been
+tested to work - or you can grab whatever the latest release is from the
+libusb upstream site at:
+
+  http://libusb.info
+
+Which should also work unless they break API or similar.
+
+---------------------------------------------------------------------------
+
+Build libusb-1.0 and create an 'installed' copy of it.  This does not need
+to be installed to the system dirs, we can just create a local tree to use:
+
+  $ cd libusb-1.0.20
+  $ mkdir build-dir && cd build-dir
+  $ ../configure --host x86_64-w64-mingw32
+  $ make
+  $ mkdir install-dir
+  $ make install DESTDIR=$(pwd)/install-dir
+
+This will install the files needed to build the bit-babbler source in the
+directory libusb-1.0.20/build-dir/install-dir/usr/local
+
+
+If you need to build this for a different target or toolchain, you can use
+a different --host, and if needed set CC and CXX to the compiler binaries.
+For example, to build for a 32-bit Windows system, instead of a 64-bit one
+as above, use something like:
+
+  $ ../configure --host i686-w64-mingw32
+
+
+You can also install it to the system library locations if you wish, but
+that probably only makes sense if you'll also be using it for other things
+as well.
+
+---------------------------------------------------------------------------
+
+Now you can build bit-babbler:
+
+  $ cd bit-babbler
+  $ mkdir build-dir
+  $ cd build-dir
+  $ ../configure --disable-shared \
+                 --host x86_64-w64-mingw32 \
+                 LIBUSB_DIR=/home/you/libusb-1.0.20/build-dir/install-dir/usr/local
+  $ make
+
+
+Where '/home/you' is the path to where you unpacked the libusb source.
+
+You should now have the needed .exe files that can be transferred to the
+windows machine for use.
+
+The --disable-shared option is optional, but means you won't need to copy
+the libusb-1.0.dll to the host machine as well, just the .exe files.
+
+
+---------------------------------------------------------------------------
+
+Installing it on the Windows host system:
+
+The seedd.exe is the primary application used to obtain random bits from
+the BitBabbler device(s) in the system, confirm their quality, and make
+them available to other users.
+
+The bbctl.exe can be used to query status information from seedd.exe when
+it is running.
+
+
+You will also need the msvcr110 runtime library installed.  It is no longer
+included by default in Windows 10 (but it should be already installed in the
+earlier versions).  It can be obtained from here:
+http://www.microsoft.com/en-us/download/details.aspx?id=30679
+
+
+You will also need the WinUSB driver installed, and you can either follow
+the instructions for doing that here:
+
+  https://github.com/libusb/libusb/wiki/Windows#Driver_Installation
+
+Or use the tool provided by:
+
+  http://zadig.akeo.ie/
+
+Which is what the first link recommends.
+
+
+Once that is all done, you should be able to run 'seedd.exe -s' and it will
+report the connected BitBabbler device(s) that are found.
+
+You can obtain random bits by running either of:
+
+ seedd.exe --stdout
+ seedd.exe --udp-out localhost:1200
+
+In the first case it will simply stream bits to stdout.
+In the second a UDP socket will listen on port 1200 of localhost, which can
+be queried for bits on demand.  You can specify any address and port which
+you please for that.
+
+To obtain bits from the UDP socket, you write the desired number of bytes
+to it as a two-octet network-order short integer.  It will then reply with
+a datagram containing the requested number of bytes of entropy.  Requests
+for 1 to 32768 bytes will be honored as soon as there is sufficient entropy
+in the internal pool to do so.  Requests outside of that range are invalid
+and will simply be ignored.  Note that no access control is placed on this
+socket, so if it uses a publicly accessible address anyone will be able to
+read entropy from it (and potentially to use it as a traffic amplifier if
+requests use a forged source address).
+
+There is an example perl script which demonstrates reading from this in the
+bit-babbler source package, see doc/examples/bbudp.pl
+
+
+---------------------------------------------------------------------------

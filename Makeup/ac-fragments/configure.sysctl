@@ -1,0 +1,57 @@
+dnl Makeup configure boilerplate.
+dnl
+dnl Copyright 2018, Ron <ron@debian.org>
+dnl
+dnl This file is distributed under the terms of the GNU GPL version 2.
+dnl
+dnl As a special exception to the GPL, it may be distributed without
+dnl modification as a part of a program using a makeup generated build
+dnl system, under the same distribution terms as the program itself.
+
+dnl Only enable this by default on platforms where we expect sysctl.d to be
+dnl present.  People can still --enable-sysctl to override that if needed.
+mu_expect_sysctl=no
+
+case $host in
+    *-*-linux* )
+	mu_expect_sysctl=yes
+    ;;
+esac
+
+dnl Option and substvar for installing sysctl snippets.
+AC_ARG_ENABLE([sysctl],
+              [AS_HELP_STRING([--enable-sysctl],
+                              [install sysctl configuration files (default yes on Linux, else no)])],
+              [mu_cv_enable_sysctl=$enableval],
+              [mu_cv_enable_sysctl=$mu_expect_sysctl])
+
+dnl Don't bother setting SYSCTL_DIR if we're using --disable-sysctl.  It being
+dnl empty provides a signal to not try and install any files in that case too.
+dnl
+dnl The systemd.pc provides what it expects to be the system path for these,
+dnl but there's some additional hackery we need to do because systemd assumes
+dnl everything will be installed into the vendor space and doesn't respect an
+dnl alternate $prefix for local builds, hardcoding only the one which systemd
+dnl itself was built with.
+dnl
+dnl So right now, the least horrid thing we can do is, if we are building with
+dnl --prefix=/usr, then we install them to the vendor sysctl dir reported by
+dnl systemd.pc, otherwise we install them to $libdir/sysctl.d.  If users need
+dnl or want something different to that, then they can override the SYSCTL_DIR
+dnl variable explicitly.  This should work ok for --prefix=/usr/local, because
+dnl both systemd-sysctl and sysctl(8) will search there too, but it won't work
+dnl by default for other oddball values of $prefix.  We could default to using
+dnl /etc/sysctl.d for the oddball case, but if people are using an odd prefix,
+dnl then they probably have their own plan for mapping that to locations which
+dnl will actually be searched, so for now at least, we'll respect that too.
+AS_IF([test "$mu_cv_enable_sysctl" = yes],[
+      ACM_IF_VENDOR_BUILD([ACM_PKG_CONFIG_GET_VAR([SYSCTL_DIR],[systemd],
+                                                  [sysctldir],[$EXP_LIBDIR/sysctl.d])],
+                          [AC_MSG_CHECKING([for SYSCTL_DIR])
+                           SYSCTL_DIR="$EXP_LIBDIR/sysctl.d"
+                           AC_MSG_RESULT([$SYSCTL_DIR (for prefix=$EXP_PREFIX)])
+                          ])
+    ])
+
+AC_ARG_VAR([SYSCTL_DIR], [where to install sysctl configuration])
+

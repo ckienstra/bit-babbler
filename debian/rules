@@ -1,0 +1,100 @@
+#!/usr/bin/make -f
+#
+# Copyright 2003 - 2018 Ron Lee.
+
+SHELL = /bin/bash
+
+export DH_OPTIONS
+
+NUM_CPUS = $(shell getconf _NPROCESSORS_ONLN 2>/dev/null)
+PARALLEL = $(subst parallel=,,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+NJOBS    = -j$(or $(PARALLEL),$(NUM_CPUS),1)
+
+DEB_BUILD_GNU_TYPE ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
+DEB_HOST_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
+
+
+build_arch_stamps = build-shared-stamp
+install_arch_stamps = install-stamp
+
+objdir_shared = objs_sh
+
+all_stamps = $(build_arch_stamps) $(install_arch_stamps)
+
+config_cache = ../config_deb.cache
+
+
+
+clean:
+	dh_testdir
+	$(RM) -r $(objdir_shared)
+	$(RM) $(all_stamps)
+	dh_clean
+
+
+$(objdir_shared)/config.status: configure
+	dh_testdir
+
+	mkdir $(objdir_shared)
+	cd $(objdir_shared) && ../configure --host=$(DEB_HOST_GNU_TYPE)   \
+					    --build=$(DEB_BUILD_GNU_TYPE) \
+					    --cache-file=$(config_cache)  \
+					    --prefix=/usr
+
+
+build: build-arch build-indep
+build-arch: $(build_arch_stamps)
+build-indep:
+
+build-shared-stamp: $(objdir_shared)/config.status
+	dh_testdir
+	$(MAKE) $(NJOBS) -C $(objdir_shared)
+	touch $@
+
+
+install: install-arch install-indep
+install-arch: build-arch $(install_arch_stamps)
+install-indep:
+
+
+install-stamp: DH_OPTIONS = -pbit-babbler
+install-stamp: build-shared-stamp
+	dh_testdir
+	dh_testroot
+	dh_prep
+	$(MAKE) -C $(objdir_shared) install DESTDIR=$(CURDIR)/debian/bit-babbler
+	dh_systemd_enable seedd.service
+	dh_systemd_enable --no-enable seedd-wait.service
+	dh_installinit --restart-after-upgrade --name seedd
+	dh_systemd_start --restart-after-upgrade seedd.service
+	dh_systemd_start --no-start seedd-wait.service
+	dh_installexamples doc/examples/* libvirt/qemu-hook
+	touch $@
+
+
+binary: binary-arch
+
+binary-common:
+	dh_testdir
+	dh_testroot
+	dh_installchangelogs
+	dh_installdocs
+	dh_strip --dbg-package=bit-babbler-dbg
+	dh_compress
+	dh_fixperms
+	dh_installdeb
+	dh_shlibdeps
+	dh_gencontrol
+	dh_md5sums
+	dh_builddeb
+
+binary-arch: build-arch install-arch
+	$(MAKE) -f debian/rules DH_OPTIONS="-a" binary-common
+
+binary-indep: build-indep install-indep
+	$(MAKE) -f debian/rules DH_OPTIONS="-i" binary-common
+
+
+.PHONY: clean build build-arch build-indep              \
+	binary binary-common binary-arch binary-indep   \
+	install install-arch install-indep

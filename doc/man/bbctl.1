@@ -1,0 +1,175 @@
+.\"                                      Hey, EMACS: -*- nroff -*-
+.\" First parameter, NAME, should be all caps
+.\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
+.\" other parameters are allowed: see man(7), man(1)
+.TH BBCTL 1 "January 24, 2018"
+.\" Please adjust this date whenever revising the manpage.
+.\"
+.\" Some roff macros, for reference:
+.\" .nh        disable hyphenation
+.\" .hy        enable hyphenation
+.\" .ad l      left justify
+.\" .ad b      justify to both left and right margins
+.\" .nf        disable filling
+.\" .fi        enable filling
+.\" .br        insert line break
+.\" .sp <n>    insert n+1 empty lines
+.\" for manpage-specific macros, see man(7)
+.SH NAME
+bbctl \- query and control tool for BitBabbler hardware RNG devices
+.SH SYNOPSIS
+.B bbctl
+.RI [ options ]
+
+
+.SH DESCRIPTION
+The \fBbbctl\fP program can be used to issue command requests to the control
+socket of software controlling a BitBabbler device (such as the \fBseedd\fP(1)
+daemon).
+
+
+.SH OPTIONS
+The following options are available:
+
+.TP
+.B \-s, \-\-scan
+Scan for active devices.  This will report the device identifiers which can be
+queried from the owner of the control socket.
+
+.TP
+.BI "\-i, \-\-device\-id=" id
+Act on only the specified device.  If no devices are explicitly specified then
+the default is to act upon all of them.  This option may be passed multiple
+times to act on some subset of the available devices.  The \fIid\fP must be an
+identifier name as reported by \fBbbctl\ \-\-scan\fP, you cannot use device
+logical or physical addresses here.
+
+.TP
+.B \-b, \-\-bin\-freq
+Report the 8-bit symbol frequencies.
+
+.TP
+.B \-B, \-\-bin\-freq16
+Report the 16-bit symbol frequencies.
+
+.TP
+.B "    \-\-bin\-count"
+Report the 8-bit symbol counts.  Similar to \fB\-\-bin\-freq\fP except the bins
+are reported in symbol order instead of sorted by frequency.
+
+.TP
+.B "    \-\-bin\-count16"
+Report the 16-bit symbol counts.  Similar to \fB\-\-bin\-freq16\fP except the
+bins are reported in symbol order instead of sorted by frequency.
+
+.TP
+.BI "    \-\-first=" n
+Show only the first \fIn\fP results.  Useful when you don't want to actually
+see all 65 thousand entries for the 16-bit bins.  The default (if neither this
+nor the \fB\-\-last\fP option are specified) is to report everything in its
+full glory.  Don't say I didn't warn you.
+
+.TP
+.BI "    \-\-last=" n
+Show only the last \fIn\fP results.  Useful when you don't want to actually
+see all 65 thousand entries for the 16-bit bins.  If used together with the
+\fB\-\-first\fP option, then both the requested head and tail of the results
+will be shown.
+
+.TP
+.B \-r, \-\-bit\-runs
+Report on runs of consecutive bits.
+
+.TP
+.B \-S, \-\-stats
+Report general QA statistics.
+
+.TP
+.BI "\-c, \-\-control\-socket=" path
+The filesystem path for the service control socket to query.  This can belong
+to any process that supports the BitBabbler control socket interface and for
+which the user running \fBbbctl\fP has permission to connect to.
+
+An address of the form \fItcp:host:port\fP may be used if the control socket is
+bound to a TCP port rather than a unix domain socket path.  The \fIhost\fP part
+can be a DNS hostname or address literal.  If an IPv6 address literal is used
+it should be enclosed in square brackets (e.g. tcp:[::1]:2020 to bind to port
+2020 on the local IPv6 interface).  The \fIport\fP can be a port number or a
+service name (as defined in \fI/etc/services\fP or other system name-service
+databases which are queried by \fBgetaddrinfo\fP(3)).
+
+.TP
+.BI "\-V, \-\-log\-verbosity=" n
+Change the logging verbosity of the control socket owner.
+
+.TP
+.BI "    \-\-waitfor=" device : passbytes : retry : timeout
+This option will make \fBbbctl\fP wait before exiting until the \fBseedd\fP(1)
+QA checking reports that at least \fIpassbytes\fP of good entropy have been
+obtained from the given \fIdevice\fP.  It will check for that every \fIretry\fP
+milliseconds, waiting for a maximum of \fItimeout\fP milliseconds before
+failing.
+
+The \fIdevice\fP is a QA test identifier as reported by \fB\-\-scan\fP, and
+must be provided, as must the expected \fIpassbytes\fP count.  The \fIretry\fP
+time is optional, and if not specified it will default to 1000 milliseconds.
+If the \fItimeout\fP is 0 (or not explicitly passed), then this will wait for
+an unbounded amount of time for the requested condition to occur.
+
+The \fIpassbytes\fP, \fIretry\fP, and \fItimeout\fP parameters may be suffixed
+with an SI multiplier (e.g. k, M, G) as a convenience, so a \fItimeout\fP of
+30k would wait for 30 seconds.
+
+This option may be passed multiple times to wait for multiple devices, and the
+given conditions for each of them will be tested for in the order that they
+are specified on the command line.  i.e. Later conditions will not be tested
+for at all until all prior ones have been met, and the \fItimeout\fP clock for
+each test only begins after the previous test has successfully completed.
+
+When all required conditions pass, \fBbbctl\fP will report success with an exit
+code of 0.  If a \fItimeout\fP is exceeded, or any other error occurs which
+means the test cannot be successfully completed (like passing a \fIdevice\fP
+which does not exist, or querying a \fB\-\-control\-socket\fP which no process
+provides), then a non-zero exit code will be returned.
+
+This option mostly exists to make it possible to delay or even prevent other
+services from starting until a sufficient amount of entropy has been obtained
+to feel comfortable that they can operate securely or as intended.  See the
+notes on \fBBOOT\ SEQUENCING\fP in \fBseedd\fP(1) for more details on that.
+It may be used for other purposes too, but note that \fIpassbytes\fP is an
+absolute measure of the number of good bytes seen since \fBseedd\fP was
+started, it is not relative to the number that were obtained prior to
+executing this request.
+
+.TP
+.B \-v, \-\-verbose
+Make more noise about what is going on internally.  It may be passed multiple
+times to get swamped with even more information.
+
+.TP
+.B \-?, \-\-help
+Show a shorter version of all of this, which may fit on a single page.
+
+.TP
+.B "    \-\-version"
+Report the \fBbbctl\fP release version.
+
+
+.SH FILES
+.TP
+.I /run/bit\-babbler/seedd.socket
+The default \fB\-\-control\-socket\fP path if not explicitly specified.  This
+may be under \fI/var/run\fP on platforms which don't (yet) provide a \fI/run\fP
+top level directory (or a TCP socket on platforms which don't support unix
+domain sockets).  It is set at compile time by \fBSEEDD_CONTROL_SOCKET\fP.
+
+
+.SH SEE ALSO
+.BR seedd (1).
+
+
+.SH AUTHOR
+.B seedd
+was written by Ron <ron@debian.org>.  You can send bug reports, feature requests,
+praise and complaints to support@bitbabbler.org.
+

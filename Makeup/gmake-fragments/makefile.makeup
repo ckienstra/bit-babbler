@@ -1,0 +1,1304 @@
+# makeup core targets.
+#
+#  Copyright 2003 - 2021, Ron <ron@debian.org>
+#
+# This file is distributed under the terms of the GNU GPL version 2.
+#
+# As a special exception to the GPL, it may be distributed without
+# modification as a part of a program using a makeup generated build
+# system, under the same distribution terms as the program itself.
+
+override THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+
+MAKEUP_DIR		= $(top_srcdir)/Makeup
+PACKAGE_CONFIG_HEADER	= setup.h
+
+
+# More ways to dodge the "eval breaks in a conditional" bug of GNU make 3.80
+
+ifneq ($(strip $(MAKEUP_VERBOSE)),)
+  $(warning goal[$(MAKELEVEL)] is '$(MAKECMDGOALS)' ...)
+  MORE_MAKEUP := include
+else
+  MORE_MAKEUP := -include
+endif
+
+
+ifndef top_srcdir
+  include Makefile.acsubst
+endif
+
+# Usually defined in makefile.acsubst.  But may be overridden.
+ifndef MAKEUP_TOP_CONFIG
+  MAKEUP_TOP_CONFIG = $(top_srcdir)/Makeup/Makeup.conf
+endif
+
+$(foreach conf,$(if $(MAKEUP_VERSION),,$(MAKEUP_TOP_CONFIG)),$(eval $(MORE_MAKEUP) $(conf)))
+$(foreach path,$(MAKEUP_GMAKE_DIR),$(eval $(MORE_MAKEUP) $(path)/makefile.fstools))
+
+ifneq ($(findstring sys-install,$(MAKECMDGOALS)),)
+  # sys-install does not need any of the PACKAGE_ attributes
+  # so ignore them early.
+  PACKAGE_CONF =
+endif
+
+$(if $(findstring makefile.fstools,$(MAKEFILE_LIST)),			\
+    $(foreach conf,$(PACKAGE_CONF),$(eval $(MORE_MAKEUP) $(conf))))
+
+
+ifneq ($(strip $(MAKEUP_VERBOSE)),)
+  $(foreach f,$(MAKEFILE_LIST),$(warning goal[$(MAKELEVEL)] using: $(f)))
+endif
+
+
+# $(eval $(call JUST_INCLUDE,_file))
+#
+# Include a makefile snippet, without trying to update that file via the default
+# catchall rules.  There must not be any other rule to create or update that file.
+define JUST_INCLUDE
+  include $(1)
+  $(1) : ;
+endef
+
+
+# $(call DELEGATE_TARGET,makefile[,target][,alternate_action])
+#
+# If makefile cannot be found the alternate_action will be executed.
+# As a special case, if alternate_action is 'Fatal', then the build
+# will fail if makefile is not found.
+define DELEGATE_TARGET
+    if [ "$(origin NEXT_GOAL_Function)" != "file" ] ; then		\
+	echo "*** NEXT_GOAL_Function is not defined";			\
+	exit 1;								\
+    fi;									\
+    if ! ( false; $(call NEXT_GOAL_Function,$(MAKEUP_GMAKE_DIR)/$(1),$(2)) ); then \
+	if [ "$(3)" = "Fatal" ]; then					\
+	    echo;							\
+	    echo "Failed to make target: $(2)";				\
+	    if [ ! -e "$(MAKEUP_GMAKE_DIR)/$(1)" ]; then		\
+		echo;							\
+		echo "You do not have $(1) installed.";			\
+		echo;							\
+		echo "Restore your source from the package tarball, contact"; \
+		echo "the package maintainer of this source about the problem,"; \
+		echo "or contact Ron <ron@debian.org> for your own copy of the"; \
+		echo "ever so time saving Makeup utilities.";		\
+	    fi;								\
+	    echo;							\
+	    exit 1;							\
+	else								\
+	    $(3) :;							\
+	fi;								\
+    fi;
+endef
+
+
+# $(call DELEGATE_HELP,makefile[,target][,alternate_action])
+#
+# If makefile cannot be found the alternate_action will be executed.
+# If alternate_action is empty, then the build will fail with a default
+# message in that case.
+define DELEGATE_HELP
+    if [ "$(origin NEXT_GOAL_Function)" != "file" ] ; then		\
+	echo "*** NEXT_GOAL_Function is not defined";			\
+	exit 1;								\
+    fi;									\
+    if ! ( false; $(call NEXT_GOAL_Function,$(MAKEUP_GMAKE_DIR)/$(1),delegated$(2)) ); then \
+	if [ -z "$(3)" ]; then						\
+	    echo;							\
+	    echo "Unable to locate documentation for: $(2)";		\
+	    if [ ! -e "$(1)" ]; then					\
+		echo;							\
+		echo "You do not have $(1) installed.";			\
+		echo;							\
+		echo "Restore your source from the package tarball, contact"; \
+		echo "the package maintainer of this source about the problem,"; \
+		echo "or contact Ron <ron@debian.org> for your own copy of the"; \
+		echo "ever so time saving Makeup utilities.";		\
+	    fi;								\
+	    echo;							\
+	    exit 1;							\
+	else								\
+	    $(3) :;							\
+	fi;								\
+    fi;
+endef
+
+
+# $(call MAKEUP_FOR_EACH,_targets[,_rule])
+# This function will (re)call the current makefile for each of the
+# (space-separated) _targets, optionally prepending them with _rule
+# to execute any of the standard prefix rules (clean-, install-, etc.)
+# The default action (empty _rule) is to build all _targets.
+define MAKEUP_FOR_EACH
+    for t in $(1); do							\
+	set -e;								\
+	echo;								\
+	echo " ----- $(2) Target: $$t";					\
+	if [ -n "$(2)" ]; then						\
+	    t="$(2)-$$t";						\
+	fi;								\
+	$(call NEXT_GOAL_Function,$(THIS_MAKEFILE),$$t)			\
+    done;
+endef
+
+
+# $(call MAKEUP_FOR_TARGET,_target[,_rule])
+# This function will attempt to locate a configuration file for _target
+# and perform _rule on it.  The default action (empty _rule) is to
+# build _target.  If no configuration file exists for it, then no action
+# will be taken to modify _target.
+define MAKEUP_FOR_TARGET
+    if [ -r "$(MAKEUP_CONFIG_DIR)/target.$(1)" ]; then			\
+	$(call DELEGATE_TARGET,makefile.target,TARGET_NAME=$(1) $(2),Fatal):;\
+    elif [ -e "$(1)" ]; then						\
+	if [ -n "$(MAKEUP_VERBOSE)" ]; then				\
+	    echo "  xxx - ignoring feral target($(2)) $(1)";		\
+	fi;								\
+    else								\
+	if [ -z "$(2)" ]; then						\
+	    echo "  *+* No rule to make target $(1)";			\
+	else								\
+	    echo "  *+* No rule to $(2) target $(1)";			\
+	fi;								\
+	echo;								\
+    fi;
+endef
+
+
+# $(call CREATE_CONF_Function,_file)
+# This function will emit a copy of the current default Makeup.conf to _file.
+define CREATE_CONF_Function
+    echo "  * Generating $(1)";						\
+    $(call CREATE_DIR_Function,$(patsubst %/,%,$(dir $(1))))		\
+    echo '# makeup configuration data.' > $(1);				\
+    echo '#' >> $(1);							\
+    echo '#  Copyright 2003 - 2021, Ron <ron@debian.org>' >> $(1);	\
+    echo >> $(1);							\
+    echo 'MAKEUP_VERSION = 0.38' >> $(1);				\
+    echo '#MAKEUP_VERBOSE = yes' >> $(1);				\
+    echo >> $(1);							\
+    echo 'MAKEUP_DIR = $$(top_srcdir)/Makeup' >> $(1);			\
+    echo >> $(1);							\
+    echo 'MAKEUP_CONFIG_DIR  = $$(MAKEUP_DIR)/config' >> $(1);		\
+    echo 'MAKEUP_CONF_M4_DIR = $$(MAKEUP_CONFIG_DIR)/m4' >> $(1);	\
+    echo 'MAKEUP_AC_DIR      = $$(MAKEUP_DIR)/ac-fragments' >> $(1);	\
+    echo 'MAKEUP_AC_AUX_DIR  = $$(MAKEUP_DIR)/ac-aux' >> $(1);		\
+    echo 'MAKEUP_GMAKE_DIR   = $$(MAKEUP_DIR)/gmake-fragments' >> $(1);	\
+    echo 'MAKEUP_SWIG_DIR    = $$(MAKEUP_DIR)/swig' >> $(1);		\
+    echo 'MAKEUP_SWIG_IF_DIR = $$(MAKEUP_SWIG_DIR)/interfaces' >> $(1);	\
+    echo 'MAKEUP_SWIG_WRAP_DIR = $$(MAKEUP_SWIG_DIR)/wrappers' >> $(1);	\
+    echo 'MAKEUP_DOXYGEN_DIR = $$(MAKEUP_DIR)/doxygen' >> $(1);		\
+    echo 'MAKEUP_DOXYGEN_THEME_DIR = $$(MAKEUP_DOXYGEN_DIR)/themes' >> $(1); \
+    echo 'MAKEUP_STAMP_DIR   = $$(MAKEUP_DIR)/stamp' >> $(1);		\
+    echo 'MAKEUP_TEST_DIR    = $$(MAKEUP_DIR)/test' >> $(1);		\
+    echo >> $(1);							\
+    echo >> $(1);							\
+    echo 'SYS_MAKEUP_DIR = /usr/share/makeup' >> $(1);			\
+    echo >> $(1);							\
+    echo 'SYS_MAKEUP_AC_DIR      = $$(SYS_MAKEUP_DIR)/ac-fragments' >> $(1);\
+    echo 'SYS_MAKEUP_GMAKE_DIR   = $$(SYS_MAKEUP_DIR)/gmake-fragments' >> $(1);\
+    echo 'SYS_MAKEUP_DOXYGEN_DIR = $$(SYS_MAKEUP_DIR)/doxygen' >> $(1);	\
+    echo 'SYS_MAKEUP_DOXYGEN_THEME_DIR = $$(SYS_MAKEUP_DOXYGEN_DIR)/themes' >> $(1); \
+    echo >> $(1);							\
+    echo >> $(1);							\
+    echo 'MAKEUP_TARGET_TYPES   = EXECUTABLE LIBRARY PLUGIN DATA SWIG KBUILD' >> $(1);\
+    echo 'MAKEUP_LINK_LANGUAGES = C C++' >> $(1);			\
+    echo >> $(1);							\
+    echo 'PROJECT_DIRS = doc include src' >> $(1);			\
+    echo >> $(1);							\
+    echo 'PACKAGE_CONF = $$(MAKEUP_CONFIG_DIR)/Package.conf' >> $(1);	\
+    echo >> $(1);
+endef
+
+
+# $(call BOOTSTRAP_MERGE_Function,_file,_srcdir,_slavedir)
+#
+define BOOTSTRAP_MERGE_Function
+   set -e;								\
+   if [ -e "$(2)/$(1)" ]; then						\
+	if [ -e "$(3)/$(1)" ]; then					\
+	    $(call MERGE_FILES_Function,$(1),$(2),$(3))	:;		\
+	else								\
+	    $(call CREATE_DIR_Function,$(3))				\
+	    echo " ++ Adding: $(3)/$(1)";				\
+	    cp "$(2)/$(1)" "$(3)/$(1)";					\
+	fi;								\
+   fi;
+endef
+
+# $(call BOOTSTRAP_MERGE_RECURSIVE_Function,_file,_srcdir,_slavedir)
+# As above, but also check, rather than barf on, all subdirectories.
+# Note the subshell which keeps scope for i.
+#
+define BOOTSTRAP_MERGE_RECURSIVE_Function
+   set -e;								\
+   ( set -e;								\
+     do_merge() {							\
+         if [ -z "$$1" ]; then return; fi;				\
+         if [ -e "$$2/$$1" ]; then					\
+             if [ -d "$$3/$$1" ]; then					\
+                 if [ -d "$$2/$$1" ]; then				\
+                     ( for i in $$(cd "$$2"/"$$1" && ls -d * 2> /dev/null); do \
+                         do_merge "$$i" "$$2/$$1" "$$3/$$1";		\
+                       done;						\
+		     )							\
+                 else							\
+                     echo " *** error replacing a directory with a file not supported yet"; \
+                     return;						\
+                 fi;							\
+             elif [ -e "$$3/$$1" ]; then				\
+                 $(call MERGE_FILES_Function,$$1,$$2,$$3) :;		\
+             else							\
+                 $(call CREATE_DIR_Function,$$3)			\
+                 echo " ++ Adding: $$3/$$1";				\
+                 cp -a "$$2/$$1" "$$3/$$1";				\
+             fi;							\
+         fi;								\
+     };									\
+     do_merge "$(1)" "$(2)" "$(3)";					\
+   )
+endef
+
+
+# Usually we get these from makefile.fstools, but we have a couple of
+# things to do before we can be sure that they are available to us here.
+ifndef VERBOSE_ANNOUNCE
+define VERBOSE_ANNOUNCE
+    @if [ -n "$(MAKEUP_VERBOSE)" ]; then echo "--> Updating target: $@"; fi;
+endef
+endif
+
+ifndef CREATE_DIR_Function
+define CREATE_DIR_Function
+    if [ ! -e $(1) ]; then		\
+      echo "  Creating dir: $(1)";	\
+      mkdir -p $(1);			\
+    fi;
+endef
+endif
+
+# $(call REMOVE_DIRS_Function,_dirs,_message)
+# This function will unconditionally wipe all _dirs and their contents.
+define REMOVE_DIRS_Function
+    $(if $(1),echo "    Removing: $(if $(2),$(2),directories)";		\
+	      $(foreach d,$(1),						\
+			if [ -e "$(d)" ]; then				\
+			    echo "      $(patsubst ./%,%,$(d))";	\
+			    $(RM) -r $(d);				\
+			elif [ -n "$(MAKEUP_VERBOSE)" ]; then		\
+			    echo "     [$(patsubst ./%,%,$(d))]";	\
+			fi;						\
+	      )								\
+    )
+endef
+
+# $(call PRUNE_DIRS_Function,_dirs)
+# This function will remove empty _dirs and any empty components of
+# their path up until the first otherwise non empty directory.  If
+# the specified directory is not empty the error if any is left for
+# the caller to deal with appropriately.
+define PRUNE_DIRS_Function
+    $(foreach d,$(1),							\
+	      $(if $(wildcard $(d)),					\
+		   echo "    Pruning path to: $(d)"; rmdir -p $(d); ))
+endef
+
+# $(call REMOVE_FILES_Function,_files,_message)
+# This function will unconditionally delete all _files specified.
+define REMOVE_FILES_Function
+    $(if $(1),echo "    Removing: $(if $(2),$(2),files)";		\
+	      $(foreach glob,$(1),					\
+			for f in $(glob); do				\
+			    if [ -e "$$f" ] || [ -h "$$f" ]; then	\
+				echo "      $${f#./}";			\
+				$(RM) $$f;				\
+			    elif [ -n "$(MAKEUP_VERBOSE)" ]; then	\
+				echo "     [$${f#./}]";			\
+			    fi;						\
+			done;						\
+	      )								\
+    )
+endef
+
+
+
+# Default target
+all :
+
+
+
+# Makeup self maintenance
+# ------------------------------------------------------------------
+
+# The contents of Makeup.conf infects just about everything here, so
+# unless we are in the act of cleaning up, make sure it exists and is
+# up to date before whatever comes next.  If a system config is found
+# that is newer than the existing config, prompt the user for a merge.
+# If there is no existing config, copy the system one.  If there is no
+# system config either, generate one from this file.
+#
+# If the goal is sys-install and the config file does not already exist,
+# a flag stamp 'makeup-sys-install-created-conf' will be created so that
+# sys-install may remove the temporary config that is created.
+
+ifeq ($(findstring makefile.fstools,$(MAKEFILE_LIST)),)
+
+$(MAKEUP_TOP_CONFIG) : SHELL = bash
+$(MAKEUP_TOP_CONFIG) : $(if $(SYS_MAKEUP_DIR),$(SYS_MAKEUP_DIR)/Makeup.conf)
+	$(VERBOSE_ANNOUNCE)
+
+    ifeq ($(findstring clean,$(MAKECMDGOALS)),)
+      ifneq ($(findstring sys-install,$(MAKECMDGOALS)),)
+	@if [ ! -e $@ ]; then touch makeup-sys-install-created-conf; fi
+      endif
+
+	@$(call BOOTSTRAP_MERGE_Function,$(@F),$(<D),$(@D))
+	@if [ ! -e "$@" ]; then $(call CREATE_CONF_Function,$@) :; fi
+    else
+	@echo " <> Not updating $@ during $(MAKECMDGOALS)"
+	@echo
+    endif
+
+endif
+
+
+ifeq ($(strip $(SYS_MAKEUP_GMAKE_DIR)),)
+
+# Don't try to update this file if we don't know where to source a replacement
+$(THIS_MAKEFILE) : ;
+
+else
+
+  ifeq ($(findstring makefile.fstools,$(MAKEFILE_LIST)),)
+
+# This rule will get us a copy of fstools if we don't have one yet,
+# it contains a more powerful rule that will supercede this one to
+# keep it updated.
+$(MAKEUP_GMAKE_DIR)/makefile.fstools : SHELL = bash
+$(MAKEUP_GMAKE_DIR)/makefile.fstools : $(SYS_MAKEUP_GMAKE_DIR)/makefile.fstools
+	$(VERBOSE_ANNOUNCE)
+
+    ifeq ($(findstring clean,$(MAKECMDGOALS)),)
+	@$(call BOOTSTRAP_MERGE_Function,$(@F),$(<D),$(@D))
+    else
+	@echo " <> Not updating $@ during $(MAKECMDGOALS)"
+	@echo
+    endif
+
+$(wildcard $(addprefix $(SYS_MAKEUP_AC_DIR)/,configure.* acsubst.* *.m4) \
+           $(SYS_MAKEUP_GMAKE_DIR)/makefile.*)				 \
+$(SYS_MAKEUP_DIR)/Makeup.conf : $(SYS_MAKEUP_DIR)/% :
+	$(VERBOSE_ANNOUNCE)
+
+    ifeq ($(findstring sys-install,$(MAKECMDGOALS)),)
+	@echo "*** Error attempting to create non existent '$@'"
+    endif
+
+  endif
+
+endif
+
+
+$(eval $(UPDATE_MAKEUP_Template))
+
+# If there are no shared files on the system, and the local source has been
+# stripped for release, then we should just try to build it all as is.
+# Users of a package should not be burdened with extra dependencies for
+# developer functions that they do not need.
+ifneq ($(wildcard $(SYS_MAKEUP_GMAKE_DIR)),)
+CHECK_MAKEUP = yes
+else ifneq ($(wildcard $(MAKEUP_GMAKE_DIR)/makefile.utils),)
+     ifneq ($(wildcard $(MAKEUP_AC_DIR)/makeup.m4),)
+       CHECK_MAKEUP = yes
+     endif
+endif
+
+
+# Package configuration
+# ------------------------------------------------------------------
+
+$(eval $(GET_KBUILD_TARGETS_Template))
+
+
+$(PACKAGE_CONF) : SHELL = bash
+$(PACKAGE_CONF) :
+	$(VERBOSE_ANNOUNCE)
+
+    ifeq ($(findstring clean,$(MAKECMDGOALS)),)
+
+      ifneq ($(findstring makefile.fstools,$(MAKEFILE_LIST)),)
+
+	@+( set -e;							\
+	$(if $(wildcard $(MAKEUP_GMAKE_DIR)/makefile.utils),,		\
+	    $(call BOOTSTRAP_MERGE_Function,makefile.utils,$(SYS_MAKEUP_GMAKE_DIR),$(MAKEUP_GMAKE_DIR)))\
+	$(call DELEGATE_TARGET,makefile.utils,black-magic,Fatal)	\
+	)
+
+      else
+
+	@echo "*** Error: trying to create $@ before makefile.fstools";	\
+	exit 1;
+
+      endif
+
+    else
+
+	@echo " <> Not creating $@ during $(MAKECMDGOALS)"; echo;
+
+    endif
+
+
+# Note: do not add help for sys-install here, it is a magic target
+# in makefile.utils and make help-sys-install will not do what you
+# might hope it would.  Document that one under install instead.
+#
+MAKEUP_HELP                   += config targets coverage
+MAKEUP_HELP_BRIEF_config      := Interactively edit the project configuration.
+MAKEUP_HELP_BRIEF_targets     := Interactively edit the project targets.
+MAKEUP_HELP_BRIEF_coverage    := Report on the code coverage of tests.
+MAKEUP_HELP_config   = $(call DELEGATE_HELP,makefile.utils,$@) :
+MAKEUP_HELP_targets  = $(call DELEGATE_HELP,makefile.utils,$@) :
+MAKEUP_HELP_coverage = $(call DELEGATE_HELP,makefile.utils,$@) :
+
+
+config		\
+targets		\
+sys-install :
+	@+$(call DELEGATE_TARGET,makefile.utils,$@,Fatal)
+
+
+
+# Build dir autotools targets.
+# ------------------------------------------------------------------
+
+__PACKAGE_CONFIG_DIR     := $(subst ./,,$(dir $(PACKAGE_CONFIG_HEADER)))
+__PACKAGE_CONFIG_PUBLIC  := $(notdir $(PACKAGE_CONFIG_HEADER))
+__PACKAGE_CONFIG_PRIVATE := private_$(__PACKAGE_CONFIG_PUBLIC)
+__PACKAGE_CONFIG_PRIV_AH := $(__PACKAGE_CONFIG_PRIVATE).in
+
+ifeq ($(CHECK_MAKEUP),yes)
+__MAKEUP_BUILD_CHECK := $(MAKEUP_STAMP_DIR)/autoscan-report-stamp		\
+			$(top_builddir)/include/$(__PACKAGE_CONFIG_PRIVATE)	\
+			$(top_builddir)/include/$(PACKAGE_CONFIG_HEADER)
+endif
+
+Makefile : | $(__MAKEUP_BUILD_CHECK)
+Makefile : | $(foreach f,$(subst $(MAKEUP_CONFIG_DIR)/acfile.,,			\
+                      $(wildcard $(MAKEUP_CONFIG_DIR)/acfile.*)),$(f))
+Makefile.acsubst : $(MAKEUP_GMAKE_DIR)/makefile.acsubst
+
+Makefile.acsubst Makefile : $(top_builddir)/config.status
+	@echo -n "  * Updating $@... "
+	@cd $(top_builddir) && ./config.status $@
+
+
+# Don't include this rule during 'unconfigured' maintenance operations.
+ifdef MAKEUP_PLATFORM_HEADER
+
+$(top_builddir)/include/$(PACKAGE_CONFIG_HEADER)				\
+$(top_builddir)/include/$(__PACKAGE_CONFIG_DIR)$(MAKEUP_PLATFORM_HEADER)	\
+$(top_builddir)/include/$(__PACKAGE_CONFIG_DIR)$(MAKEUP_FLAVOUR_HEADER) :	\
+			   $(top_builddir)/$(__PACKAGE_CONFIG_PUBLIC)-stamp
+	@if [ ! -e $@ ]; then							\
+	    echo -n "  * Restoring missing $(__PACKAGE_CONFIG_DIR)$(@F)... ";	\
+	    cd $(top_builddir)							\
+		&& ./config.status include/$(PACKAGE_CONFIG_HEADER);		\
+	fi
+endif
+
+$(top_builddir)/$(__PACKAGE_CONFIG_PUBLIC)-stamp : $(top_builddir)/config.status
+	@echo -n "  * Updating $(PACKAGE_CONFIG_HEADER)... "
+	@cd $(top_builddir)							\
+		&& ./config.status include/$(PACKAGE_CONFIG_HEADER)		\
+		&& touch $@
+
+$(top_builddir)/include/$(__PACKAGE_CONFIG_PRIVATE) : $(top_builddir)/$(__PACKAGE_CONFIG_PRIVATE)-stamp
+	@if [ ! -e $@ ]; then							\
+	    echo -n "  * Restoring missing $(__PACKAGE_CONFIG_PRIVATE)... ";	\
+	    cd $(top_builddir)							\
+		&& ./config.status include/$(__PACKAGE_CONFIG_PRIVATE);		\
+	fi
+
+$(top_builddir)/$(__PACKAGE_CONFIG_PRIVATE)-stamp : $(top_srcdir)/$(__PACKAGE_CONFIG_PRIV_AH) \
+							$(top_builddir)/config.status
+	@echo -n "  * Updating $(__PACKAGE_CONFIG_PRIVATE)... "
+	@cd $(top_builddir)							\
+		&& ./config.status include/$(__PACKAGE_CONFIG_PRIVATE)		\
+		&& touch $@
+
+$(foreach f,$(subst $(MAKEUP_CONFIG_DIR)/acfile.,,				\
+         $(wildcard $(MAKEUP_CONFIG_DIR)/acfile.*)),$(f)) :			\
+% : $(MAKEUP_CONFIG_DIR)/acfile.% $(top_builddir)/config.status
+	@echo -n "  * Updating $@... "
+	@cd $(top_builddir) && ./config.status $@
+
+$(top_builddir)/config.status : $(top_srcdir)/configure
+	@echo "  * Checking config.status"
+	@cd $(top_builddir) && ./config.status --recheck
+
+
+
+# Source dir autotools targets.
+# ------------------------------------------------------------------
+
+# Don't try to use a default target to update package config dependencies.
+# If any do need updating in that way they will have an explicit rule.
+$(MAKEUP_CONFIG_DIR)/% : ;
+
+ifneq ($(CHECK_MAKEUP),yes)
+
+$(top_srcdir)/configure : ;
+$(MAKEUP_GMAKE_DIR)/% : ;
+$(MAKEUP_AC_DIR)/% : ;
+
+else
+
+$(top_srcdir)/$(__PACKAGE_CONFIG_PRIV_AH) : $(MAKEUP_STAMP_DIR)/$(__PACKAGE_CONFIG_PRIV_AH)-stamp
+	@if [ ! -e $@ ]; then						\
+	    echo "  * Restoring missing $(__PACKAGE_CONFIG_PRIV_AH)";	\
+	    cd $(top_srcdir) && autoheader;				\
+	fi;
+
+$(MAKEUP_STAMP_DIR)/$(__PACKAGE_CONFIG_PRIV_AH)-stamp : $(top_srcdir)/configure.ac
+	$(VERBOSE_ANNOUNCE)
+	@echo "  * Checking $(__PACKAGE_CONFIG_PRIV_AH)"
+	@( cd $(top_srcdir) && autoheader ) && $(call STAMP_Function,$@) :;
+	@if [ -e $(top_srcdir)/$(__PACKAGE_CONFIG_PRIV_AH)~ ] &&			\
+	    [ -z "$$(cat $(top_srcdir)/$(__PACKAGE_CONFIG_PRIV_AH)~)" ]; then		\
+	    $(call REMOVE_FILES_Function,$(top_srcdir)/$(__PACKAGE_CONFIG_PRIV_AH)~	\
+		   ,"empty $(__PACKAGE_CONFIG_PRIV_AH)~") :;				\
+	fi;
+
+$(top_srcdir)/configure : $(addprefix $(top_srcdir)/,configure.ac aclocal.m4)	\
+			| $(top_srcdir)/$(__PACKAGE_CONFIG_PRIV_AH)
+	$(VERBOSE_ANNOUNCE)
+	@echo "  * Generating configure"
+	@cd $(top_srcdir) && autoconf
+
+$(top_srcdir)/configure.ac : $(MAKEUP_TOP_CONFIG)				\
+			     $(PACKAGE_CONF)					\
+			     $(MAKEUP_GMAKE_DIR)/makefile.utils			\
+			     $(addprefix $(MAKEUP_AC_DIR)/, makeup.m4		\
+				$(foreach t,$(PACKAGE_TESTS),			\
+				  $(if $(wildcard $(MAKEUP_CONFIG_DIR)/$(t)),,$(t)))	\
+				$(foreach t,$(subst configure,acsubst,$(PACKAGE_TESTS)),\
+				  $(if $(wildcard $(SYS_MAKEUP_AC_DIR)/$(t)),	\
+				    $(if $(wildcard $(MAKEUP_CONFIG_DIR)/$(t)),,$(t)))))\
+			     $(wildcard $(MAKEUP_CONFIG_DIR)/configure.*)	\
+			     $(wildcard $(MAKEUP_CONFIG_DIR)/acsubst.*)		\
+			     $(wildcard $(MAKEUP_CONFIG_DIR)/acfile.*)		\
+			     $(KBUILD_TARGET_FILES)				\
+			   | $(addprefix $(MAKEUP_GMAKE_DIR)/,			\
+					 makefile.makeup makefile.acsubst	\
+					 $(if $(KBUILD_TARGET_FILES),		\
+					      makefile.kbuild))			\
+			     $(foreach d,$(PACKAGE_DOCS),			\
+					 $(MAKEUP_DOXYGEN_DIR)/doxygen.$(d)	\
+					 doc_theme-$(d))			\
+			     $(if $(wildcard $(top_srcdir)/.git),		\
+					 $(top_srcdir)/.gitignore)
+	@+$(call DELEGATE_TARGET,makefile.utils,$@,Fatal)
+
+$(top_srcdir)/aclocal.m4 : $(top_srcdir)/configure.ac				\
+			   $(addprefix $(MAKEUP_AC_DIR)/,			\
+				$(foreach t,$(PACKAGE_M4),			\
+				  $(if $(wildcard $(SYS_MAKEUP_AC_DIR)/$(t)),	\
+				    $(if $(wildcard $(MAKEUP_AC_DIR)/$(t)),,$(t)))))\
+			   $(wildcard $(MAKEUP_AC_DIR)/*.m4)			\
+			   $(wildcard $(MAKEUP_CONF_M4_DIR)/*.m4)
+	@+$(call DELEGATE_TARGET,makefile.utils,$@,Fatal)
+
+$(top_srcdir)/.gitignore :
+	@+$(call DELEGATE_TARGET,makefile.utils,$@)
+
+$(MAKEUP_STAMP_DIR)/autoscan-report-stamp : $(top_srcdir)/configure.ac
+	@+$(call DELEGATE_TARGET,makefile.utils,$@,$(call STAMP_Function,$@):;)
+
+endif
+
+
+# Build targets
+# ------------------------------------------------------------------
+
+all : $(PACKAGE_TARGETS)
+
+fast : NUM_CPUS = $(shell getconf _NPROCESSORS_ONLN 2>/dev/null)
+fast : NJOBS    = -j$(or $(NUM_CPUS),1) NJOBS=""
+fast :
+	$(MAKE) $(NJOBS) -f $(THIS_MAKEFILE) all
+
+
+# Don't generate Makefile.interdeps until configure has been run.
+# The target makefiles may include substitutions that won't be available before that.
+ifeq ($(findstring update-interdeps,$(MAKECMDGOALS)),)
+$(if $(findstring Makefile.acsubst,$(MAKEFILE_LIST)), $(eval $(MORE_MAKEUP) Makefile.interdeps))
+endif
+
+update-interdeps : EMPTY =
+update-interdeps :
+	@echo 'include $(MAKEUP_CONFIG_DIR)/target.$$(TARGET_NAME)'	> Makefile.makeinterdeps
+	@echo								>> Makefile.makeinterdeps
+	@echo 'grep-deps: TARGET_DEPS = $$($$(TARGET_NAME)_TARGET_DEPS)'>> Makefile.makeinterdeps
+	@echo 'grep-deps:'						>> Makefile.makeinterdeps
+	@echo '	@[ -z "$$(TARGET_DEPS)" ] || echo "$$(TARGET_NAME) : $$(TARGET_DEPS)" >> Makefile.interdeps' \
+									>> Makefile.makeinterdeps
+	@echo								>> Makefile.makeinterdeps
+	@echo '.PHONY: grep-deps'					>> Makefile.makeinterdeps
+
+	@echo '# makeup generated boilerplate for $(PACKAGE_NAME) target interdependencies' > Makefile.interdeps
+	@echo '# Do not edit, your changes will be lost.'		>> Makefile.interdeps
+	@echo								>> Makefile.interdeps
+
+	@echo "  * Generating Makefile.interdeps"
+	@for t in $(wildcard $(MAKEUP_CONFIG_DIR)/target.*); do			\
+		$(MAKE) --no-print-directory -f Makefile.makeinterdeps		\
+						TARGET_NAME="$${t##*target.}"	\
+						grep-deps;			\
+	done
+	@$(RM) Makefile.makeinterdeps
+
+
+Makefile.interdeps : $(THIS_MAKEFILE) $(wildcard $(MAKEUP_CONFIG_DIR)/target.*)
+	@$(MAKE) --no-print-directory -f $(THIS_MAKEFILE) update-interdeps
+
+
+# Delegation target.
+% : force-update
+	@if [ -n "$(MAKEUP_VERBOSE)" ] ; then				\
+	    echo "==> $*";						\
+	fi;
+	$(VERBOSE_ANNOUNCE)
+	@+if [ "$*" != "$(THIS_MAKEFILE)" ]; then			\
+	    if [ -r "$(MAKEUP_CONFIG_DIR)/makefile.$*" ]; then		\
+		$(call NEXT_GOAL_Function,$(MAKEUP_CONFIG_DIR)/makefile.$*) :;\
+	    else							\
+		$(call MAKEUP_FOR_TARGET,$*)				\
+	    fi;								\
+	elif [ -n "$(MAKEUP_VERBOSE)" ] ; then				\
+	    echo "*** Not updating this makefile: $*";			\
+	fi
+
+.PHONY: all fast update-interdeps
+
+
+# Documentation
+# ------------------------------------------------------------------
+
+MAKEUP_HELP             += docs
+MAKEUP_HELP_BRIEF_docs  := Generate documentation for your project.
+define MAKEUP_HELP_docs
+    echo "  The 'docs' target will generate all documentation for your project."
+    echo "  You can generate individual parts of the documentation by using"
+    echo "  'make doc-<module>'."
+    echo
+    echo "  The default modules are:"
+    echo
+    echo "    doc-source - for source browser documentation."
+    echo "    doc-user   - for user level documentation."
+    echo "    doc-clean  - purge all generated documentation files."
+    echo
+    echo "  Package.conf settings:"
+    echo "  PACKAGE_DOCS =                 source user [ custom ... ]"
+    echo "  PACKAGE_DOC_<module>_THEME =   [ parchment | striped ]"
+    echo
+    echo "  If no theme is specified for a particular module, the doxygen default"
+    echo "  will be used.  None of the above settings are mandatory."
+    echo "  If PACKAGE_DOCS is empty no docs will be generated by makeup."
+endef
+
+docs :
+	@$(foreach d,$(PACKAGE_DOCS),$(call NEXT_GOAL_Function,$(THIS_MAKEFILE),doc-$(d)))
+
+
+   # So here, we need to:
+   # check if the doc theme exists locally.
+   #   check if it exists on the system
+   #     copy or update as required
+   # create the new theme link.
+   # run doxygen.
+   # copy any theme files overwriting the generated ones.
+
+doc-% : SHELL = bash
+$(foreach d,$(PACKAGE_DOCS),doc-$(d)) : doc-% : $(top_builddir)/doc/doxyconf.% doc_theme-%
+	$(VERBOSE_ANNOUNCE)
+
+	@if [ -n "$(PACKAGE_DOC_$*_THEME)" ]; then				\
+	    cd $(<D) &&								\
+	    ln -sf ../$(MAKEUP_DOXYGEN_THEME_DIR)/$(PACKAGE_DOC_$*_THEME).css doc-$*.css; \
+	    if [ ! -e ../$(MAKEUP_DOXYGEN_THEME_DIR)/$(PACKAGE_DOC_$*_THEME).css ]; then \
+		echo "          *** Warning: $(PACKAGE_DOC_$*_THEME) theme is not installed."; \
+		echo " Hit a whitespace key, or 'Y' in the next 20 seconds to use the default style."; \
+		echo "        Do nothing or hit any other key to abort and fix the problem."; \
+		read -t 20 -s -n1 blazeon;					\
+		case $$blazeon in						\
+		    Y | y | "" )						\
+			;;							\
+		    * )								\
+			set -e;							\
+			exit 1;							\
+			;;							\
+		esac;								\
+	    fi;									\
+	fi
+
+	@cd $(<D) && doxygen "$(<F)"
+
+	@if [ -n "$(PACKAGE_DOC_$*_THEME)" ]; then				\
+	    $(call INSTALL_DATA_RECURSIVE_Function,$$(cd $(MAKEUP_DOXYGEN_THEME_DIR)/$(PACKAGE_DOC_$*_THEME) && ls -d *),$(<D)/doc_$*,$(MAKEUP_DOXYGEN_THEME_DIR)/$(PACKAGE_DOC_$*_THEME),$(PACKAGE_DOC_$*_THEME) theme components) \
+	fi
+
+doc_theme-% : SHELL = bash
+$(foreach d,$(PACKAGE_DOCS),doc_theme-$(d)) : doc_theme-% :
+	$(VERBOSE_ANNOUNCE)
+	@if [ "$(PACKAGE_DOC_$*_THEME)" != "" ]; then				\
+	    for f in $(PACKAGE_DOC_$*_THEME){,.css}; do				\
+	        $(call BOOTSTRAP_MERGE_RECURSIVE_Function,$$f,$(SYS_MAKEUP_DOXYGEN_THEME_DIR),$(MAKEUP_DOXYGEN_THEME_DIR)) \
+	    done;								\
+	fi
+
+$(foreach d,$(PACKAGE_DOCS),$(top_builddir)/doc/doxyconf.$(d)) :	\
+$(top_builddir)/doc/doxyconf.% : $(MAKEUP_DOXYGEN_DIR)/doxygen.% $(top_builddir)/config.status
+	$(VERBOSE_ANNOUNCE)
+	@echo -n "  * Updating doxyconf.$*... "
+	@cd $(top_builddir) && ./config.status $@
+
+$(MAKEUP_DOXYGEN_DIR)/% : SHELL = bash
+$(foreach f,$(PACKAGE_DOCS),$(MAKEUP_DOXYGEN_DIR)/doxygen.$(f)) :	\
+$(MAKEUP_DOXYGEN_DIR)/% : $(SYS_MAKEUP_DOXYGEN_DIR)/%
+	$(VERBOSE_ANNOUNCE)
+	@if [ -e "$(SYS_MAKEUP_DOXYGEN_DIR)/$*" ] ; then		\
+	    $(call BOOTSTRAP_MERGE_Function,$*,$(SYS_MAKEUP_DOXYGEN_DIR),$(MAKEUP_DOXYGEN_DIR)) :; \
+	elif [ ! -e "$@" ] ; then					\
+	    if doxygen -g "$@" ; then					\
+		echo;							\
+		echo "  * Generated new doxygen config: $@";		\
+		echo "     You should edit this file to take advantage of the";\
+		echo "     substitution variables made available by configure.";\
+		echo;							\
+	    else							\
+		echo;							\
+		echo "*** Failed to copy or generate $@.";		\
+		echo "    You must install doxygen, and/or edit this file yourself";\
+		echo;							\
+		exit 1;							\
+	    fi;								\
+	fi;
+
+# If these don't exist, there isn't much we can usefully do about it here.
+$(SYS_MAKEUP_DOXYGEN_DIR)/% : ;
+
+.PHONY : docs $(foreach d,$(PACKAGE_DOCS),doc-$(d) doc_theme-$(d))
+
+# Remove generated documentation
+doc-clean :
+	@$(call REMOVE_FILES_Function,					\
+	        $(foreach d,$(PACKAGE_DOCS),$(addprefix $(top_builddir)/doc/,doxyconf.$(d) doc-$(d).css))\
+		,"generated documentation config")
+	@$(call REMOVE_DIRS_Function,					\
+	        $(foreach d,$(PACKAGE_DOCS),$(top_builddir)/doc/doc_$(d))\
+		,"generated documentation")
+	@-$(call PRUNE_DIRS_Function,doc)
+
+# FIXME What else do we need to remove here??  We probably need to define
+#       some standard target directories that people can subst in the doxyconf
+#       and which can be expected to get reaped here.
+
+
+# i18n
+# ------------------------------------------------------------------
+
+allmo allpo : force-update
+	@+$(call DELEGATE_TARGET,makefile.i18n,$@)
+
+%.mo %.po : force-update
+	@+$(call DELEGATE_TARGET,makefile.i18n,$@)
+
+
+# Automated testing for package targets
+# ------------------------------------------------------------------
+
+tests : force-update
+	@+$(call DELEGATE_TARGET,makefile.utils,$@)
+
+test-% antitest-% : force-update
+	@+$(call DELEGATE_TARGET,makefile.utils,$@)
+
+
+# Code coverage testing for package targets
+# ------------------------------------------------------------------
+
+coverage-report : force-update
+	@+$(call DELEGATE_TARGET,makefile.utils,$@)
+
+lcov-% : force-update
+	@+$(call DELEGATE_TARGET,makefile.utils,$@)
+
+
+# Install targets
+# ------------------------------------------------------------------
+
+MAKEUP_HELP               += install
+MAKEUP_HELP_BRIEF_install := Install project files.
+define MAKEUP_HELP_install
+    echo " Install related targets are:"
+    echo
+    echo "  install              - install all default targets."
+    echo "  install-<target>     - install an individual target."
+    echo "  install_lib-<target> - install the runtime parts of a library target."
+    echo "  install_dev-<target> - install the headers and build time parts of"
+    echo "                         a library target.  Equivalent to calling both"
+    echo "                         of the following install_dev_* targets."
+    echo "  install_dev_arch-<target>"
+    echo "                       - install the platform dependent build time parts"
+    echo "                         of a library target."
+    echo "  install_dev_indep-<target>"
+    echo "                       - install the headers and platform independent"
+    echo "                         build time parts of a library target."
+    echo "  install_setup        - install config headers."
+    echo "  install_i18n         - install internationalisation files."
+endef
+
+# Install all default targets.
+install :
+	@$(RM) "$(top_builddir)/__need_{ldconfig,setup}"
+	@+$(call MAKEUP_FOR_EACH,$(PACKAGE_TARGETS),install)
+
+	@if [ -e "$(top_builddir)/__need_setup" ]; then				\
+		$(RM) "$(top_builddir)/__need_setup";				\
+		if [ -n "$(__PACKAGE_CONFIG_DIR)" ]; then			\
+			echo;							\
+			$(MAKE) --no-print-directory install_setup;		\
+		fi;								\
+	fi
+	@if [ -e "$(top_builddir)/__need_ldconfig" ]; then			\
+		$(RM) "$(top_builddir)/__need_ldconfig";			\
+		echo "    ldconfig";						\
+		ldconfig;							\
+	fi
+
+# Install individual targets.
+install-% : force-update
+	@+$(call MAKEUP_FOR_TARGET,$*,install)
+	@$(RM) "$(top_builddir)/__need_{ldconfig,setup}"
+
+# Install run time parts of a library target.
+install_lib-% : force-update
+	@+$(call MAKEUP_FOR_TARGET,$*,install-lib)
+
+# Install headers and build time parts of a library target.
+# Equivalent to calling both install_dev_arch and install_dev_indep.
+install_dev-% : force-update
+	@+$(call MAKEUP_FOR_TARGET,$*,install-dev)
+
+# Install platform dependent build time parts of a library target.
+install_dev_arch-% : force-update
+	@+$(call MAKEUP_FOR_TARGET,$*,install-dev-arch)
+
+# Install headers and platform independent build time parts of a library target.
+install_dev_indep-% : force-update
+	@+$(call MAKEUP_FOR_TARGET,$*,install-dev-indep)
+
+install_setup :
+	@$(call CREATE_DIR_Function,$(DESTDIR)$(includedir)/$(__PACKAGE_CONFIG_DIR))	\
+	echo "    Installing setup : $(PACKAGE_CONFIG_HEADER)";				\
+	$(INSTALL_DATA) include/$(PACKAGE_CONFIG_HEADER)				\
+			$(DESTDIR)$(includedir)/$(__PACKAGE_CONFIG_DIR);		\
+	echo "    Installing setup : $(__PACKAGE_CONFIG_DIR)$(MAKEUP_FLAVOUR_HEADER)";	\
+	$(INSTALL_DATA) include/$(__PACKAGE_CONFIG_DIR)$(MAKEUP_FLAVOUR_HEADER)		\
+			$(DESTDIR)$(includedir)/$(__PACKAGE_CONFIG_DIR);		\
+	echo "    Installing setup : $(__PACKAGE_CONFIG_DIR)$(MAKEUP_PLATFORM_HEADER)";	\
+	cp -d include/$(__PACKAGE_CONFIG_DIR)$(MAKEUP_PLATFORM_HEADER)			\
+		$(DESTDIR)$(includedir)/$(__PACKAGE_CONFIG_DIR)
+
+install_i18n :
+	@$(foreach mofile,							\
+		   $(foreach lingua,$(ALL_LINGUAS),				\
+			     $(wildcard locale/$(lingua)/LC_MESSAGES/*.mo)),	\
+		   $(call INSTALL_DATA_Function,$(mofile),$(DESTDIR)$(datadir),	\
+			  $(top_builddir),message catalogue))
+
+
+# Clean targets
+# ------------------------------------------------------------------
+
+MAKEUP_HELP             += clean
+MAKEUP_HELP_BRIEF_clean := Clean project build directories.
+define MAKEUP_HELP_clean
+    echo "  Clean related targets are:"
+    echo
+    echo "    clean             - clean all default targets."
+    echo "    clean-<target>    - clean an individual target."
+    echo "    allclean-<target> - clean an individual target and its dependencies."
+    echo "    extra-clean       - clean all default and extra targets, including"
+    echo "                        i18n message catalogues."
+    echo "    dist-clean        - clean everything except the makeup boilerplate"
+    echo "                        and configure script.  After this you should"
+    echo "                        still be able to ./configure && make"
+    echo "    release-clean     - similar to dist-clean, but also removes all"
+    echo "                        makeup files not essential to simply building"
+    echo "                        the package, cleans all default and extra targets,"
+    echo "                        including i18n message catalogues."
+    echo "    repo-clean        - clean everything that is regenerable if you have"
+    echo "                        makeup installed on the system.   After this you"
+    echo "                        will need to run makeup to return to the dist-clean"
+    echo "                        state."
+    echo
+    echo "    makeup-dist-clean - you should never want to run this target on your"
+    echo "                        own code, it is for removing everything *except*"
+    echo "                        the makeup boilerplate when preparing makeup itself"
+    echo "                        for distribution."
+endef
+
+# Clean individual targets.
+clean-% : force-update
+	@+$(call MAKEUP_FOR_TARGET,$*,clean)
+
+# Clean individual targets and their dependencies
+allclean-% : force-update
+	@+$(call MAKEUP_FOR_TARGET,$*,allclean)
+
+# Clean all default targets.
+clean : $(addprefix clean-,$(PACKAGE_TARGETS))
+	@$(RM) *.gcda *.gcno "$(top_builddir)/__need_{ldconfig,setup}"
+
+# Clean all default and extra targets, including i18n message catalogues,
+# and any files generated from acfile.* inputs.
+extra-clean : $(addprefix clean-,$(subst $(MAKEUP_CONFIG_DIR)/target.,, \
+					 $(wildcard $(MAKEUP_CONFIG_DIR)/target.*)))
+	@$(call REMOVE_FILES_Function,					\
+		$(foreach f,$(subst $(MAKEUP_CONFIG_DIR)/acfile.,,	\
+		         $(wildcard $(MAKEUP_CONFIG_DIR)/acfile.*)),$(f)) \
+		,"generated files")
+	@$(call REMOVE_DIRS_Function, coverage $(wildcard coverage-*)	\
+		,"coverage report dirs")
+	@$(RM) *.gcda *.gcno "$(top_builddir)/__need_{ldconfig,setup}"
+
+
+# Clean everything except the makeup boilerplate and configure script.
+# After this you should still be able to ./configure && make
+
+dist-clean : $(if $(IGNORE_TARGETS),,extra-clean doc-clean)
+	@$(call REMOVE_FILES_Function,					\
+		Makefile						\
+		Makefile.acsubst					\
+		Makefile.interdeps					\
+		Makefile.makeinterdeps					\
+		$(wildcard Makefile.acsubst.*)				\
+		$(__PACKAGE_CONFIG_PUBLIC)-stamp			\
+		$(__PACKAGE_CONFIG_PRIVATE)-stamp			\
+		include/$(__PACKAGE_CONFIG_PRIVATE)			\
+		include/$(PACKAGE_CONFIG_HEADER)			\
+		$(patsubst %,include/$(__PACKAGE_CONFIG_DIR)%*_$(__PACKAGE_CONFIG_PUBLIC),\
+			   linux bsd msw)				\
+		$(addprefix config.,log status)				\
+		$(top_srcdir)/$(__PACKAGE_CONFIG_PRIV_AH)~		\
+		$(top_builddir)/__need_ldconfig				\
+		$(top_builddir)/__need_setup				\
+		,"generated files")
+	@$(call REMOVE_DIRS_Function,$(top_srcdir)/autom4te.cache $(MAKEUP_STAMP_DIR) \
+		,"build cruft dirs")
+	@-$(call PRUNE_DIRS_Function,include/$(__PACKAGE_CONFIG_DIR))
+
+
+# Similar to dist-clean, but also removes all makeup files not essential
+# to simply building the package.
+
+release-clean : dist-clean
+	@$(call REMOVE_FILES_Function,					\
+		$(addprefix $(MAKEUP_GMAKE_DIR)/makefile.,edit utils colour) \
+		,"makeup maintainer utility files")
+	@$(call REMOVE_DIRS_Function,$(MAKEUP_TEST_DIR),"test output")
+
+
+# Clean everything that is regenerable if you have makeup installed on
+# the system.   After this you will need to run makeup to return to
+# the dist-clean state.
+
+repo-clean : dist-clean
+	@$(call REMOVE_DIRS_Function,$(MAKEUP_AC_DIR),"autoconf fragments")
+	@$(call REMOVE_FILES_Function,					\
+		$(addprefix $(top_srcdir)/,aclocal.m4			\
+					   $(__PACKAGE_CONFIG_PRIV_AH)	\
+					   configure configure.ac)	\
+		$(MAKEUP_TOP_CONFIG)					\
+		,"regenerable autoconf")
+	@$(call REMOVE_FILES_Function,					\
+		$(addprefix $(MAKEUP_DOXYGEN_DIR)/doxygen.,source user)	\
+		$(addprefix $(MAKEUP_DOXYGEN_DIR)/themes/,parchment.css striped.css) \
+		,"doxygen boilerplate")
+	@$(call REMOVE_DIRS_Function,					\
+		$(addprefix $(MAKEUP_DOXYGEN_DIR)/themes/,parchment striped) \
+		,"doxygen boilerplate themes")
+	@$(if $(ALL_LINGUAS),						\
+		$(call REMOVE_FILES_Function,				\
+			$(foreach lingua,$(ALL_LINGUAS),		\
+				$(wildcard locale/$(lingua)/LC_MESSAGES/*.mo)) \
+			,"binary message catalogues")			\
+	)
+	@$(call REMOVE_DIRS_Function,					\
+		$(MAKEUP_AC_DIR) $(MAKEUP_AC_AUX_DIR) $(MAKEUP_GMAKE_DIR) \
+		,"makeup boilerplate")
+	@-echo "    Pruning path to: $(MAKEUP_DIR)/doxygen/themes";	\
+	  cd $(MAKEUP_DIR) && rmdir -p doxygen/themes
+	@$(call REMOVE_DIRS_Function,					\
+		$(MAKEUP_SWIG_WRAP_DIR)					\
+		,"generated swig wrappers")
+
+
+# You should never want to run the following target on your own code,
+# it is for removing everything *except* the makeup boilerplate when
+# preparing makeup itself for distribution.
+
+makeup-dist-clean : dist-clean
+	@if [ "$(MAKEUP_DIST_CLEAN_PROMPT)" != "No" ]; then		\
+	    echo;							\
+	    echo "Executing this target will destroy all project configuration"; \
+	    echo "and source files leaving only the Makeup boilerplate."; \
+	    echo "If you really meant to call this, you can avoid this message"; \
+	    echo "in the future by setting MAKEUP_DIST_CLEAN_PROMPT = No"; \
+	    echo "If you didn't, now is your chance to back away slowly."; \
+	    echo;							\
+	    echo -n "Really *DESTROY* existing project config ? (yes/N) "; \
+	    read yesno;							\
+	    case $${yesno} in						\
+	    YES | yes)							\
+		echo "Ok then, its your hard work...";			\
+		;;							\
+	    *)								\
+		echo "I thought not...  Stopping";			\
+		exit 1;							\
+		;;							\
+	    esac;							\
+	fi;
+	@$(call REMOVE_FILES_Function,$(top_srcdir)/$(MAKEUP_TOP_CONFIG) \
+		,"generated config")
+	@$(call REMOVE_DIRS_Function,					\
+		$(addprefix $(top_srcdir)/Makeup/,config stamp)		\
+		,"package config")
+	@$(call PRUNE_DIRS_Function,include src)
+
+
+# Distribution targets
+# ------------------------------------------------------------------
+
+# These are new options for 0.18, so fall back to some sensible defaults
+# if they aren't already set in Package.conf for some existing package.
+PACKAGE_DIST_TYPE     ?= tar
+PACKAGE_DIST_COMPRESS ?= gz
+PACKAGE_BUILD_ROOTCMD ?= fakeroot
+
+# This one we don't usually expect to find defined in Package.conf, since the
+# files listed aren't actually in the distributed package.  Two types of input
+# file are read to build the list of excluded files:
+#  - dist-exclude.*
+#    These files contain a simple list of (space or newline separated) paths to
+#    files or directories that should not be included in distribution packages.
+#    Shell globs may be used in this list.
+#  - dist-exclude-override.*
+#    These files are included directly as make syntax.  They may be used for
+#    manipulating the PACKAGE_DIST_EXCLUDE list in a more direct manner when
+#    complex or rule based lists are desired.  They are included after the list
+#    of paths (if any) from dist-exclude.* files have been imported.  Usually
+#    they should contain just an assignment of some form to PACKAGE_DIST_EXCLUDE.
+PACKAGE_DIST_EXCLUDE = $(strip $(shell cat $(MAKEUP_CONFIG_DIR)/dist-exclude.* 2> /dev/null))
+
+# Include any dist-exclude-override.* files without trying to update them.
+$(foreach f,$(wildcard $(MAKEUP_CONFIG_DIR)/dist-exclude-override.*),$(eval $(call JUST_INCLUDE,$(f))))
+
+
+MAKEUP_HELP            += dist
+MAKEUP_HELP_BRIEF_dist := Create a package for distribution.
+define MAKEUP_HELP_dist
+    echo "  Dist related targets are:"
+    echo
+    echo "    dist              - create a package using the default dist type."
+    echo
+    echo "    tardist           - create a tar.$(PACKAGE_DIST_COMPRESS) snapshot of the current working dir."
+    echo "    targzdist         - create a tar.gz snapshot of the current working dir."
+    echo "    tarbz2dist        - create a tar.bz2 snapshot of the current working dir."
+    echo
+    echo "    gitdist           - create a tar.$(PACKAGE_DIST_COMPRESS) snapshot of the git branch HEAD."
+    echo "    gitgzdist         - create a tar.gz snapshot of the git branch HEAD."
+    echo "    gitbz2dist        - create a tar.bz2 snapshot of the git branch HEAD."
+    echo
+    echo "    debdist           - create a Debian source package from the git branch HEAD."
+    echo "    debbuild          - create a Debian binary package from the git branch HEAD."
+    echo
+    echo "  The 'tardist' and 'gitdist' targets use the compressor defined by the"
+    echo "  parameter PACKAGE_DIST_COMPRESS.  The 'dist' target default is defined"
+    echo "  by the value of PACKAGE_DIST_TYPE."
+    echo
+    echo "  Package.conf parameters:"
+    echo "  PACKAGE_DIST_TYPE     = [ tar | git | deb ]  (currently $(PACKAGE_DIST_TYPE))"
+    echo "  PACKAGE_DIST_COMPRESS = [ gz | bz2 ]         (currently $(PACKAGE_DIST_COMPRESS))"
+endef
+
+
+# $(eval $(call MAKEUP_TAR_DIST_Template,_tarflag,_suffix))
+# This target will create a compressed tar archive.
+# If a tar archive is the default `make dist` type for the package, then the
+# list of files in PACKAGE_DIST_EXCLUDE will not be included in the archive.
+#
+# If the default dist type is git or deb, then it is assumed that this target
+# will not be used for public releases, but may be used as a convenience to
+# generate local snapshots for testing.  In that case we generate a tarball
+# that includes everything in the current working dir, except git repo data
+# and any files removed by the release-clean target.
+define MAKEUP_TAR_DIST_Template
+tar$(2)dist: SHELL    = bash
+tar$(2)dist: DISTNAME = $$(PACKAGE_NAME)-$$(PACKAGE_VERSION)
+tar$(2)dist: TARDIR   = $$(top_srcdir)/../tar-packages
+tar$(2)dist:
+	@if [ -z "$$(TARDIR)" -o -z "$$(DISTNAME)" ]; then		\
+		echo "*** ERROR: bad dist dir:"				\
+		     "TARDIR='$$(TARDIR)' DISTNAME='$$(DISTNAME)'";	\
+		exit 1;							\
+	fi
+	mkdir -p $$(TARDIR)
+	$(RM) -r $$(TARDIR)/$$(DISTNAME){,.tar.$(2)}
+	cp -al $$(top_srcdir) $$(TARDIR)/$$(DISTNAME)
+	@if [ "$$(strip $$(PACKAGE_DIST_TYPE))" = "tar" ] &&		\
+	    [ -n "$$(strip $$(PACKAGE_DIST_EXCLUDE))" ]; then		\
+	    echo "$(RM) -r $$(addprefix $$(DISTNAME)/,$$(PACKAGE_DIST_EXCLUDE))"; \
+	    $(RM) -r $$(addprefix $$(TARDIR)/$$(DISTNAME)/,$$(PACKAGE_DIST_EXCLUDE)); \
+	    $(RM) "$$(TARDIR)/$$(DISTNAME)/$$(call SRCPATH_Function,$$(MAKEUP_CONFIG_DIR))/"dist-exclude*; \
+	fi
+	cd $$(TARDIR)/$$(DISTNAME) && $$(MAKE) release-clean
+	cd $$(TARDIR) && tar --exclude=.git --exclude=.gitignore	\
+			     --exclude=.gitattributes			\
+			     -$(1)cf $$(DISTNAME).tar.$(2) $$(DISTNAME)
+	$(RM) -r $$(TARDIR)/$$(DISTNAME)
+
+	@if [ "$$(strip $$(PACKAGE_DIST_TYPE))" != "tar" ] &&		\
+	    [ -n "$$(strip $$(PACKAGE_DIST_EXCLUDE))" ]; then		\
+	    echo;							\
+	    echo " NOTE: Normally excluded files have not been removed";\
+	    echo '       To make a public release use `make dist` instead';\
+	    echo;							\
+	fi
+endef
+
+# $(eval $(call MAKEUP_GIT_DIST_Template,_tarflag,_suffix,_compressor))
+# This target will create a compressed tar archive.
+define MAKEUP_GIT_DIST_Template
+git$(2)dist: DISTNAME = $$(PACKAGE_NAME)-$$(PACKAGE_VERSION)
+git$(2)dist: GITDIR   = $$(top_srcdir)/../git-packages
+git$(2)dist:
+	@if [ -z "$$(GITDIR)" -o -z "$$(DISTNAME)" ]; then		\
+		echo "*** ERROR: bad dist dir:"				\
+		     "GITDIR='$$(GITDIR)' DISTNAME='$$(DISTNAME)'";	\
+		exit 1;							\
+	fi
+	@if [ ! -d "$$(top_srcdir)/.git" ]; then			\
+		echo "*** ERROR: not a git repository";			\
+		exit 1;							\
+	fi
+	mkdir -p $$(GITDIR)
+	mkdir $$(GITDIR)/tmpdist
+	$(RM) $$(GITDIR)/$$(DISTNAME).tar.$(2)
+	@echo "git archive --format=tar --prefix=$$(DISTNAME)/ HEAD |"
+	@( cd $$(top_srcdir) &&						\
+	   git archive --format=tar --prefix=$$(DISTNAME)/ HEAD ) |	\
+	  ( cd $$(GITDIR)/tmpdist && tar xf - &&			\
+	    if [ -n "$$(strip $$(PACKAGE_DIST_EXCLUDE))" ]; then	\
+		echo "$(RM) -r $$(addprefix $$(DISTNAME)/,$$(PACKAGE_DIST_EXCLUDE))"; \
+		$(RM) -r $$(addprefix $$(DISTNAME)/,$$(PACKAGE_DIST_EXCLUDE)); \
+		$(RM) "$$(DISTNAME)/$$(call SRCPATH_Function,$$(MAKEUP_CONFIG_DIR))/"dist-exclude*; \
+	    fi &&							\
+	    ( cd $$(DISTNAME) && makeup unix-target-config project-release ) && \
+	    echo "tar -$(1)cf ../$$(DISTNAME).tar.$(2) $$(DISTNAME)" && \
+	    tar --exclude=.gitignore --exclude=.gitattributes		\
+		-$(1)cf ../$$(DISTNAME).tar.$(2) $$(DISTNAME) )
+	$(RM) -r $$(GITDIR)/tmpdist
+endef
+
+
+$(eval $(call MAKEUP_TAR_DIST_Template,z,gz))
+$(eval $(call MAKEUP_TAR_DIST_Template,j,bz2))
+
+tardist: tar$(strip $(PACKAGE_DIST_COMPRESS))dist
+
+$(eval $(call MAKEUP_GIT_DIST_Template,z,gz,gzip))
+$(eval $(call MAKEUP_GIT_DIST_Template,j,bz2,bzip2))
+
+gitdist: git$(strip $(PACKAGE_DIST_COMPRESS))dist
+
+dist: $(strip $(PACKAGE_DIST_TYPE))dist
+
+# Only fetch this (once) if we really need it
+ifneq ($(filter deb%,$(MAKECMDGOALS)),)
+GET_DEB_VERSION  = $(strip $(if $(wildcard $(1)/debian),		\
+				$(shell cd $(1) && dpkg-parsechangelog	\
+					| awk '/Version:/ {print $$2}')))
+DEBVER		:= $(call GET_DEB_VERSION, $(top_srcdir))
+endif
+
+debdist: SHELL    = bash
+debdist: DISTNAME = $(PACKAGE_NAME)-$(PACKAGE_VERSION)
+debdist: DEBDIR   = $(top_srcdir)/../deb-packages
+debdist:
+	@if [ -z "$(DEBDIR)" -o -z "$(DISTNAME)" ]; then		\
+		echo "*** ERROR: bad dist dir:"				\
+		     "DEBDIR='$(DEBDIR)' DISTNAME='$(DISTNAME)'";	\
+		exit 1;							\
+	fi
+	@if [ ! -d "$(top_srcdir)/debian" ]; then			\
+		echo "*** ERROR: not debianised source";		\
+		exit 1;							\
+	fi
+	@if [ -z "$(DEBVER)" ]; then					\
+		echo "*** ERROR: failed to get debian version";		\
+		exit 1;							\
+	fi
+	mkdir -p $(DEBDIR)
+	$(RM) -r $(DEBDIR)/$(DISTNAME){,.orig}
+	@echo "git archive --format=tar --prefix=$(DISTNAME)/ HEAD |";
+	@(cd $(top_srcdir) &&						\
+	  git archive --format=tar --prefix=$(DISTNAME)/ HEAD ) |	\
+	  ( cd $(DEBDIR) && tar xf - &&					\
+	    if [ -n "$(strip $(PACKAGE_DIST_EXCLUDE))" ]; then		\
+		echo "$(RM) -r $(addprefix $(DISTNAME)/,$(PACKAGE_DIST_EXCLUDE))"; \
+		$(RM) -r $(addprefix $(DISTNAME)/,$(PACKAGE_DIST_EXCLUDE)); \
+		$(RM) "$(DISTNAME)/$(call SRCPATH_Function,$(MAKEUP_CONFIG_DIR))/"dist-exclude*; \
+	    fi &&							\
+	    ( cd $(DISTNAME) &&						\
+	      for f in $$(find -name ".gitignore"); do $(RM) $$f; done &&\
+	      makeup unix-target-config project-release &&		\
+	      $(PACKAGE_BUILD_ROOTCMD) debian/rules clean ) &&		\
+	    case $(DEBVER) in						\
+		*-*)							\
+		    echo "dpkg-source -b -sR $(DISTNAME)";		\
+		    cp -al $(DISTNAME) $(DISTNAME).orig			\
+		    && $(RM) -r $(DISTNAME).orig/debian			\
+		    && dpkg-source -b -sR $(DISTNAME)			\
+		    ;;							\
+		*)							\
+		    echo "dpkg-source -b -sn $(DISTNAME)";		\
+		    dpkg-source -b -sn $(DISTNAME)			\
+		    ;;							\
+	    esac )
+
+debbuild: DISTNAME = $(PACKAGE_NAME)-$(PACKAGE_VERSION)
+debbuild: DEBDIR   = $(top_srcdir)/../deb-packages
+debbuild: debdist
+	cd $(DEBDIR)/$(DISTNAME)					\
+	&& dpkg-buildpackage -r$(strip $(PACKAGE_BUILD_ROOTCMD)) 2>&1	\
+	|  tee ../build-$(PACKAGE_NAME)-$(DEBVER).log
+
+
+
+.PHONY: dist tardist targzdist tarbz2dist gitdist gitgzdist gitbz2dist	\
+	debdist debbuild
+
+
+# Help targets
+# ------------------------------------------------------------------
+
+$(eval $(MAKEUP_HELP_Template))
+
+
+.PHONY : config targets sys-install source-doc user-doc allmo allpo tests	\
+	 install install_setup install_i18n clean extra-clean doc-clean		\
+	 dist-clean release-clean repo-clean makeup-dist-clean help force-update
+

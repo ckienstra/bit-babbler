@@ -1,0 +1,4 @@
+seedd-conf_TYPE = DATA
+seedd-conf_DATA_SRCDIR = $(srcdir)/doc/config
+seedd-conf_DATA_INSTALLDIR = /etc/bit-babbler
+seedd-conf_DATA_FILES = seedd.conf

@@ -1,0 +1,164 @@
+# udev rules for bit-babbler devices.
+
+SUBSYSTEM!="usb", GOTO="bb_end"
+
+ACTION!="add|change|bind", GOTO="bb_end_add"
+
+# This is what we'd like to do.  Skip all the rules here if Vendor:Product
+# is not 0403:7840 -- but that's not what these two tests will actually do
+# (at least with udev versions up to 232-25 which shipped in Stretch).
+# If the device we're handling an event for doesn't have the idVendor or
+# idProduct attributes at all, then these tests are still false, the same
+# as if they did have the values which we are testing for ...
+#ATTR{idVendor}!="0403", GOTO="bb_end"
+#ATTR{idProduct}!="7840", GOTO="bb_end"
+
+# So instead, we need to explicitly test that they *are* the values we are
+# looking for, and play goto leapfrog to get the control flow logic we want.
+ATTR{idVendor}=="0403", ATTR{idProduct}=="7840", GOTO="bb_add"
+GOTO="bb_end"
+
+LABEL="bb_add"
+
+
+# Create a symlink to a well known name that can be used for cgroup_device_acl
+# configuration in /etc/libvirt/qemu.conf, and for other similar purposes too.
+# We need to include this rule for bind events too, otherwise udev (as of the
+# 237 release at least) will remove the link that it created with the add event
+# when the bind event is processed.
+SYMLINK+="bitbabbler/$attr{serial}"
+
+
+# Don't run the rest of this for bind events, because normally they'll just
+# come immediately after the add event for these devices, and we don't need
+# to repeat all of this twice every time a device is added.
+ACTION!="add|change", GOTO="bb_end_add"
+
+
+# If the system group 'bit-babbler' exists, give users in it direct access to
+# the device.  Otherwise only root will have access to the hardware itself.
+#
+# If that group doesn't exist, then by default udev will just ignore the rule
+# to set GROUP, and the call to setfacl will be a no-op, aside from reporting
+# those failures to syslog.  If you don't want to add that group and enable
+# this feature, but do want to avoid the errors in the logs, the test below
+# can be enabled to skip them, but normally it's just a waste of cycles, and
+# one more thing that could go wrong on some system during early boot.
+#
+# We won't trust udev to negate this test either, so play leapfrog again.
+#PROGRAM="/usr/bin/getent group bit-babbler", GOTO="bb_set_group"
+#GOTO="bb_end_set_group"
+
+LABEL="bb_set_group"
+
+# Allow users in group bit-babbler to access the device directly.
+# If ACLs are supported, grant users in the bit-babbler group access to the device
+# with them too.  This is mainly so that if a VM is halted, the device will revert
+# to normal access from the host system again.  The libvirt 'managed' mode will not
+# restore the original ownership when it releases the device, it will just make it
+# be root:root, stomping the GROUP we set above.
+GROUP="bit-babbler"
+TEST=="/usr/bin/setfacl", RUN+="/usr/bin/setfacl -m g:bit-babbler:rw $devnode"
+
+LABEL="bb_end_set_group"
+
+
+# Limit access to owner and group, and run the bbvirt script to see if
+# this device was configured for hotplugging into a virtual machine.
+#
+# We now also only do this if the libvirt socket actually exists, which is an
+# imperfect workaround for a systemd race-to-deadlock introduced in Bullseye
+# by the libvirt package adding a "socket activation" unit instead of just
+# letting the daemon create and manage its own socket ...
+#
+# The boot-time race works like this:
+# - udev-trigger.service gets us here with an add event for BitBabbler devices
+#   that are already in the machine being booted.  We call `bbvirt attach` with
+#   the device details which in turn does `virsh attach` if the device has been
+#   assigned to a VM.
+#
+# - On a 'fast' machine with enough cores to handle the boot thundering herd,
+#   or when startup dependencies are correctly declared and ordered, then the
+#   libvirt socket will not have been created yet, this operation will fail
+#   gracefully, and the QEMU hook will attach the device later when the VM it
+#   is assigned to is actually started.
+#
+#   If that takes a bit too long for any reason, then sloppy boot dependencies
+#   may allow the libvirt socket to already be present.  Prior to Bullseye (and
+#   it being created by a .socket unit with no guarantee that there will ever
+#   be a consumer for the socket), this would mean that the libvirt daemon was
+#   running, and it would either perform our request or fail gracefully if the
+#   VM itself had not been started yet (but that would not happen in practice
+#   as its .service dependencies are not yet satisfied when this first runs,
+#   and are typically on the other side of at least one ordering barrier).
+#
+#   But in Bullseye with the libvirtd.socket being blindly created "as early as
+#   possible" with no regard for if or when the daemon will actually be there
+#   to handle requests, virsh connects to a zombie socket and then just waits
+#   'forever' for a response.  Accessing the socket makes systemd request the
+#   daemon service to start, but it cannot as its own dependencies are not yet
+#   satisfied (and are unlikely to be in the boot stage where this first runs).
+#
+# - Meanwhile, in another part of the thundering herd, someone unrelated to us
+#   calls udevadm settle to allow its initial set of expected devices to become
+#   available if they are already in the queue, and the boot cannot proceed to
+#   the next target until that has completed.  The ifupdown-pre.service does
+#   this, but any other early boot step could also reasonably do so.
+#
+#   However our event is in that queue, and virsh will not stop hanging on the
+#   zombie socket until it gets a response to shouting into the void.  And it
+#   will never get a response because the daemon which would give it cannot be
+#   started until after the prerequisites scheduled after this deadlock are
+#   satisfied.
+#
+#   The boot hangs until systemd's "bug solver" simply times it all out, and
+#   kills everything leaving the admin to Know His Own.  Much sadness ensues
+#   as the admin is now locked out of the remote machine because the network
+#   services were an innocent victim of a deadlock black hole just waiting
+#   for things to fall in it ...
+#
+# Testing for the socket here narrows the window in which the race can be lost
+# but cannot totally eliminate it.  To properly fix this, the libvirt socket
+# creation needs to be deferred until there is a libvirtd process to handle
+# request to it.  And separately to that the networking.service needs to not
+# refuse to start if ifupdown-pre.service "fails", because udevadm settle can
+# fail or deadlock or time out for many reasons not related to the network
+# devices not actually being there, so making a best effort to still start
+# them cannot be the wrong thing to do ...
+#
+# Ideally systemd should handle the transitive dependencies that the .socket
+# inherits which are required before the .service can start, but apparently
+# suggesting that is a heresy to the systemd cult who simply refuse to hear
+# it, still pretending that "ordering will sort itself out if you just start
+# all the sockets as early as possible", despite repeated reports of the real
+# deadlocks that result from sloppy handling of known ordering prerequisites.
+# So as usual, we'll just work around them until the problem actually happens
+# to them in a way they can't handwave off and see what else happens then ...
+MODE="0660", TEST=="@LIBVIRT_SOCKET@", \
+RUN+="@EXP_BINDIR@/bbvirt --syslog attach $attr{serial} --busnum $attr{busnum} --devnum $attr{devnum}"
+
+# Enable USB autosuspend.  The BitBabbler devices support suspending correctly,
+# though not every controller they might be plugged into will always play nicely.
+# It should be safe to enable it here, even if an upstream hub or controller
+# needs it disabled.  The XHCI controllers seem to be the most troublesome, but
+# mostly with older kernels.
+TEST=="power/control", ATTR{power/control}="auto"
+TEST=="power/autosuspend_delay_ms", ATTR{power/autosuspend_delay_ms}="2000"
+
+LABEL="bb_end_add"
+
+
+ACTION!="remove", GOTO="bb_end"
+
+# Explicitly detach unplugged devices from the VM if they were passed through to it.
+# If we don't do this, the stale <hostdev> configuration will remain, and could
+# match some other completely different device that is plugged in later ...
+# This is why we can't make persistent changes to the domain definition for VMs that
+# aren't running when the device is plugged in, because if the host goes down without
+# this rule being run, we'd never clean those up.
+#
+# We can't test against the attributes here, if this would match they are already gone.
+ENV{ID_VENDOR_ID}=="0403", ENV{ID_MODEL_ID}=="7840", TEST=="@LIBVIRT_SOCKET@", \
+ RUN+="@EXP_BINDIR@/bbvirt --syslog detach $env{ID_SERIAL_SHORT} --busnum $env{BUSNUM} --devnum $env{DEVNUM}"
+
+LABEL="bb_end"

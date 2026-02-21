@@ -1,0 +1,115 @@
+# @configure_input@
+#
+# Cross Platform makefile boilerplate.
+#
+# Copyright 1999 - 2018, Ron Lee <ron@debian.org>
+#
+# This file is distributed under the terms of the GNU GPL version 2.
+#
+# As a special exception to the GPL, it may be distributed without
+# modification as a part of a program using a makeup generated build
+# system, under the same distribution terms as the program itself.
+
+MAKEUP_TOP_CONFIG	= $(top_srcdir)/Makeup/Makeup.conf
+
+MAKEUP_HOST_ARCH	= @MAKEUP_HOST_ARCH@
+MAKEUP_DEFAULT_LINKAGE	= @MAKEUP_DEFAULT_LINKAGE@
+MAKEUP_PLATFORM_HEADER	= @MAKEUP_PLATFORM_HEADER@
+MAKEUP_FLAVOUR_HEADER	= @MAKEUP_FLAVOUR_HEADER@
+
+
+# Install locations.
+
+DESTDIR      =
+
+srcdir	     = @srcdir@
+top_srcdir   = @top_srcdir@
+
+builddir     = @builddir@
+top_builddir = @top_builddir@
+
+# autoconf 2.57 still does not set top_builddir if == builddir.
+ifeq ($(strip $(top_builddir)),)
+  top_builddir = @builddir@
+endif
+
+
+prefix       = @prefix@
+exec_prefix  = @exec_prefix@
+
+bindir       = @bindir@
+sbindir      = @sbindir@
+libdir       = @libdir@
+
+includedir   = @includedir@
+datarootdir  = @datarootdir@
+datadir      = @datadir@
+mandir       = @mandir@
+
+subdirs	     = @subdirs@
+
+SYSTEM_RUNDIR	= @SYSTEM_RUNDIR@
+
+
+EXEEXT		= @EXEEXT@
+DSOEXT		= @DSOEXT@
+
+
+CC		= @CC@
+CXX		= @CXX@
+CPP		= @CPP@
+CXXCPP		= @CXXCPP@
+
+INSTALL		= @INSTALL@
+INSTALL_PROGRAM	= @INSTALL_PROGRAM@
+INSTALL_DATA	= @INSTALL_DATA@
+LN_S		= @LN_S@
+
+AR		= @AR@
+RANLIB		= @RANLIB@
+LEX		= @LEX@
+YACC		= @YACC@
+
+WINDRES		= @WINDRES@
+WINRCFLAGS	= @WINRCFLAGS@
+
+ARFLAGS		= @ARFLAGS@
+YACCFLAGS	= @YACCFLAGS@
+LEXFLAGS	= @LEXFLAGS@
+
+XGETTEXT	= @XGETTEXT@
+XGETTEXT_ARGS	= @XGETTEXT_ARGS@
+MSGINIT		= @MSGINIT@
+MSGMERGE	= @MSGMERGE@
+MSGFMT		= @MSGFMT@
+
+ALL_LINGUAS	= @ALL_LINGUAS@
+GETTEXT_MSG_SRC	= @GETTEXT_MSG_SRC@
+
+LIBINTL		= @LIBINTL@
+LIBICONV	= @LIBICONV@
+
+LCOV		= @LCOV@
+GENHTML		= @GENHTML@
+
+CPPFLAGS	= @CPPFLAGS@
+CFLAGS		= @CFLAGS@
+CXXFLAGS	= @CXXFLAGS@
+LDFLAGS		= @LDFLAGS@
+
+HOST_PICFLAGS	= @HOST_PICFLAGS@
+PICFLAGS	= @PICFLAGS@
+
+LIBS		= @LIBS@
+
+PTHREAD_CPPFLAGS = @PTHREAD_CPPFLAGS@
+PTHREAD_LDFLAGS  = @PTHREAD_LDFLAGS@
+
+EXTRACPPFLAGS	= @EXTRACPPFLAGS@
+EXTRACFLAGS	= @EXTRACFLAGS@
+EXTRACXXFLAGS	= @EXTRACXXFLAGS@
+EXTRALDFLAGS	= @EXTRALDFLAGS@
+EXTRAYACCFLAGS	= @EXTRAYACCFLAGS@
+EXTRALEXFLAGS	= @EXTRALEXFLAGS@
+EXTRALIBS	= @EXTRALIBS@
+

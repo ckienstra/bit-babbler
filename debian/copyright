@@ -1,0 +1,20 @@
+
+The bit-babbler package is:
+
+	Copyright (C) 2003 - 2018, Ron Lee <ron@debian.org>
+
+It is distributed according to the terms of the GNU GPL v2.
+
+On Debian systems, the complete text of the GNU GPL can be found in
+/usr/share/common-licenses/GPL-2
+
+
+The implementation of poz() and pochisq() in include/bit-babbler/chisq.h
+are (heavily) based on public domain code from John "Random" Walker's ENT
+test suite, which in turn took it with minimal modification from public
+domain code by Gary Perlman of the Wang Institute.
+
+The original code for ENT can be found at <http://www.fourmilab.ch/random>
+The changes to poz() and pochisq() made in this package are released into
+the public domain as well.
+

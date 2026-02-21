@@ -1,0 +1,4 @@
+man1_TYPE = DATA
+man1_DATA_SRCDIR = $(srcdir)/doc/man
+man1_DATA_INSTALLDIR = $(mandir)/man1
+man1_DATA_FILES = seedd.1 bbcheck.1 bbctl.1 bbvirt.1

@@ -1,0 +1,39 @@
+Source: bit-babbler
+Section: admin
+Priority: optional
+Maintainer: Ron Lee <ron@debian.org>
+Build-Depends: debhelper (>= 9), debhelper (>= 9.20160709) | dh-systemd,
+               libusb-1.0-0-dev, libudev-dev [linux-any], pkg-config
+Standards-Version: 4.6.0.1
+Homepage: http://www.bitbabbler.org
+
+Package: bit-babbler
+Architecture: any
+Depends: ${shlibs:Depends}
+Suggests: munin-node, libjson-xs-perl, libvirt-clients | libvirt-bin, acl
+Description: BitBabbler hardware TRNG and kernel entropy source support
+ This package provides supporting software for the BitBabbler true random
+ number generator hardware.  It includes:
+ .
+  - The seedd daemon for running continuous quality and health checks on
+    the active devices and the stream of entropy that they provide, and
+    for seeding the OS kernel entropy pool on demand.
+  - Monitoring tools for short and long term analysis, and alerting of
+    anomalies in both the BitBabbler output and the kernel /dev/random
+    and /dev/urandom output.
+  - Admin tools for real-time inspection of the short and long term
+    quality metrics.
+ .
+ You will need to install libjson-xs-perl if you wish to use the munin-node
+ script for continuous graphing and monitoring of device performance.
+ .
+ You will need to install libvirt-clients if you want hotplug support for
+ adding devices to libvirt managed virtual machines.
+
+Package: bit-babbler-dbg
+Section: debug
+Architecture: any
+Depends: bit-babbler (= ${binary:Version})
+Description: debugging symbols for BitBabbler tools
+ This package provides the detached debug symbols for software in the
+ bit-babbler package.

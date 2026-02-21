@@ -1,0 +1,131 @@
+#!/bin/sh
+
+set -e
+
+# summary of how this script can be called:
+#        * <postinst> `configure' <most-recently-configured-version>
+#        * <old-postinst> `abort-upgrade' <new version>
+#        * <conflictor's-postinst> `abort-remove' `in-favour' <package>
+#          <new-version>
+#        * <postinst> `abort-remove'
+#        * <deconfigured's-postinst> `abort-deconfigure' `in-favour'
+#          <failed-install-package> <version> `removing'
+#          <conflicting-package> <version>
+# for details, see http://www.debian.org/doc/debian-policy/ or
+# the debian-policy package
+
+
+migrate_seedd_conf()
+{
+    local oldconf='/etc/default/seedd'
+    local newconf='/etc/bit-babbler/seedd.conf'
+    local saveconf="${oldconf}.dpkg-old"
+
+    # Remove the old config if it was unmodified
+    rm -f "${oldconf}.dpkg-remove"
+
+    # Otherwise, if it's still there and we still own it, let's convert it.
+    [ -e "$oldconf" ] || return 0
+    dpkg-query -L bit-babbler | grep -F -q -x "$oldconf" || return 0
+
+    # Preserve the new config file that was shipped with the package, in the
+    # same way as if the user had chosen "keep my local changes" at the dpkg
+    # conffile update prompt.  Except for this we keep them without prompting.
+    [ ! -e "$newconf" ] || mv -f "$newconf" "${newconf}.dpkg-new"
+
+    # Simulate how the old config was converted to command line options in the
+    # init script, then generate a new format config file using those options.
+    # Pretend we were invoked by systemd for that, since the new init script
+    # will itself add the needed options which that would omit.
+    (
+      SEEDD_ARGS="-k"
+      . "$oldconf"
+      [ -z "$CONTROL_GROUP" ] || SEEDD_ARGS="$SEEDD_ARGS --socket-group $CONTROL_GROUP"
+
+      export NOTIFY_SOCKET=@dummy
+
+      cat > "$newconf" <<-EOF
+	# These options were automatically migrated from $oldconf
+	# during upgrade to the bit-babbler 0.8 (or later) release.
+	#
+	# A copy of the old file has been preserved in $saveconf
+	# which can safely be deleted now after confirming that there is nothing
+	# remaining in it which you do wish to retain a copy of.
+	#
+	# This file can safely be edited to customise the seedd configuration, it will
+	# not be automatically (re)generated again after the initial conversion of the
+	# old configuration file has created it.
+
+	EOF
+
+      if /usr/bin/seedd --gen-conf $SEEDD_ARGS >> "$newconf" 2>/dev/null; then
+	# Preserve a copy of their old config.  We migrated anything which was
+	# actively being used by the old init script, but there may be comments
+	# or commented out configurations, or other things which it would be a
+	# bit rude of us to just completely delete without asking.
+	cat - "$oldconf" > "$saveconf" <<-EOF
+		# NOTE: This file contains the last content from $oldconf
+		#       prior to it being converted into the new $newconf
+		#
+		#       It may safely be deleted if there is nothing else in it which you wish
+		#       to retain.  The seedd configuration uses options from the new file now
+		#       and there is nothing which still uses anything from the old one at all.
+
+	EOF
+
+	rm -f "$oldconf"
+	echo "Automatically migrated $oldconf configuration to $newconf"
+	echo "The previous configuration file was saved to $saveconf"
+      fi
+    )
+}
+
+migrate_sysctl_conf()
+{
+    local oldconf='/etc/sysctl.d/bit-babbler-sysctl.conf'
+    local keepconf="${oldconf}.dpkg-backup"
+    local killconf="${oldconf}.dpkg-remove"
+
+    if [ -e "$keepconf" ]; then
+
+	echo "Preserving modified $oldconf as a local override."
+	echo "The package supplied configuration is now in /usr/lib/sysctl.d instead."
+	mv -f "$keepconf" "$oldconf"
+
+    elif [ -e "$killconf" ]; then
+
+	echo "Moved unmodified $oldconf to /usr/lib/sysctl.d"
+	rm -f "$killconf"
+    fi
+}
+
+case "$1" in
+    configure)
+	addgroup --quiet --system bit-babbler
+
+	# Version 0.8 adds /etc/bit-babbler/seedd.conf, replacing the previous
+	# daemon configuration options which were set in /etc/default/seedd.
+	dpkg --compare-versions -- "$2" ge-nl '0.8~' || migrate_seedd_conf
+
+	# Version 0.9 moves /etc/sysctl.d/bit-babbler-sysctl.conf to the
+	# /usr/lib/sysctl.d directory, but we need to preserve the one in
+	# /etc exactly as it is, as an override, if it was modified.
+	dpkg --compare-versions -- "$2" ge-nl '0.9~' || migrate_sysctl_conf
+
+	sysctl -q -p /usr/lib/sysctl.d/bit-babbler-sysctl.conf || true
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+	echo "postinst called with unknown argument \`$1'" >&2
+	exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0
+
+# vi:sts=4:sw=4:noet

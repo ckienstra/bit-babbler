@@ -1,0 +1,153 @@
+# makeup internationalisation stub, includes rules for building
+# gettext style .mo and .po files.
+#
+#  Copyright 1999 - 2021, Ron <ron@debian.org>
+#
+# This file is distributed under the terms of the GNU GPL v2.
+
+override THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+
+ifneq ($(strip $(MAKEUP_VERBOSE)),)
+  $(warning goal[$(MAKELEVEL)] is $(MAKECMDGOALS)...)
+endif
+
+ifndef top_srcdir
+  include Makefile.acsubst
+endif
+
+# Usually defined in makefile.acsubst.  But may be overridden.
+ifndef MAKEUP_TOP_CONFIG
+  MAKEUP_TOP_CONFIG = $(top_srcdir)/Makeup/Makeup.conf
+endif
+
+include $(MAKEUP_TOP_CONFIG)
+
+ifneq ($(strip $(PACKAGE_CONF)),)
+  -include $(PACKAGE_CONF)
+endif
+
+include $(MAKEUP_GMAKE_DIR)/makefile.fstools
+
+localedir = $(srcdir)/locale
+
+
+allmo :
+	$(VERBOSE_ANNOUNCE)
+	@+( set -e;								\
+	   for d in $(ALL_LINGUAS) ; do						\
+		echo ;								\
+		echo "--> Examining locale '$$d'" ;				\
+		domains="$(basename $(notdir $(wildcard $(localedir)/*.pot)))";	\
+		for n in $${domains:=$(PACKAGE_NAME)} ; do			\
+		    $(call NEXT_GOAL_Function,$(THIS_MAKEFILE),			\
+			   locale/$$d/LC_MESSAGES/$$n.mo)			\
+		done;								\
+	   done;								\
+	 )
+
+
+allpo :
+	$(VERBOSE_ANNOUNCE)
+	@+( set -e;								\
+	   for d in $(ALL_LINGUAS) ; do						\
+		echo ;								\
+		echo "--> Examining $(localedir)/$$d/LC_MESSAGES/$(PACKAGE_NAME).po"; \
+		$(call NEXT_GOAL_Function,$(THIS_MAKEFILE),			\
+			$(localedir)/$$d/LC_MESSAGES/$(PACKAGE_NAME).po)	\
+	   done;								\
+	 )
+
+
+
+$(localedir)/$(PACKAGE_NAME).pot : $(shell find $(GETTEXT_MSG_SRC) -name "*.h" -o  \
+								   -name "*.cc" -o \
+								   -name "*.cpp" )
+	$(VERBOSE_ANNOUNCE)
+	@if [ -z "$(XGETTEXT)" ]; then						\
+		echo "*** xgettext is not installed/enabled.  aborting";	\
+		echo ;								\
+		exit 1;								\
+	fi
+	@( set -e;								\
+	   echo "  * Generating $(PACKAGE_NAME).pot message catalog template";	\
+	   $(call CREATE_DIR_Function,$(localedir))				\
+	   $(XGETTEXT)	--copyright-holder="$(PACKAGE_MAINTAINER)"		\
+			--msgid-bugs-address="$(PACKAGE_MAINTAINER)"		\
+			$(XGETTEXT_ARGS) $^ -o $@ ;				\
+	 )
+
+define POFILE_Template
+
+  $(localedir)/$(1)/LC_MESSAGES/%.po : $(localedir)/%.pot
+	$$(VERBOSE_ANNOUNCE)
+	@( set -e ;								\
+	   if ! test -f $$< ; then						\
+		echo "*** $$< is not a file.  aborting" ;			\
+		echo ;								\
+		exit 1 ;							\
+	   fi;									\
+	   if [ -z "$(MSGMERGE)" ]; then					\
+		echo "*** msgmerge is not installed/enabled.  aborting";	\
+		echo ;								\
+		exit 1;								\
+	   fi;									\
+	   if [ -z "$(MSGINIT)" ]; then						\
+		echo "*** msginit is not installed/enabled.  aborting";		\
+		echo ;								\
+		exit 1;								\
+	   fi;									\
+	 )
+	@( set -e ;								\
+	   if test -f $$@ ; then						\
+		echo ;								\
+		echo -n "    Merging changes from $$< message catalog template..." ;\
+		$(MSGMERGE) $$@ $$< > $$@.new && mv $$@.new $$@ ;		\
+	   else									\
+		echo ;								\
+		$(call CREATE_DIR_Function,$$(@D))				\
+		echo -n "    New locale: " ;					\
+		$(MSGINIT) --no-translator -i $$< -o $$@ -l $(1) ;		\
+	   fi;									\
+	 )
+
+endef
+
+define MOFILE_Template
+
+  locale/$(1)/LC_MESSAGES/%.mo : $(localedir)/$(1)/LC_MESSAGES/%.po
+	$$(VERBOSE_ANNOUNCE)
+	@( set -e;								\
+	   echo ;								\
+	   if [ -z "$(MSGFMT)" ]; then						\
+		echo "*** gettext is not enabled or msgfmt is not installed.  aborting";\
+		echo ;								\
+		exit 1;								\
+	   fi;									\
+	 )
+	@( set -e;								\
+	   echo "    $$@  <---  $$<" ;						\
+	   if test -e $$< ; then						\
+		$(call CREATE_DIR_Function,$$(@D))				\
+		echo -n "    " ;						\
+		$(MSGFMT) --verbose -c -o $$@ $$< ;				\
+	   fi;									\
+	   if test -f $$@ ; then						\
+		echo "    Ok." ;						\
+		echo ;								\
+	   else									\
+		echo "*** Failed ***" ;						\
+		echo ;								\
+		exit 1;								\
+	   fi;									\
+	 )
+
+endef
+
+$(eval $(foreach lingua,$(ALL_LINGUAS),			\
+                 $(call POFILE_Template,$(lingua))	\
+                 $(call MOFILE_Template,$(lingua))))
+
+
+.SECONDARY :
+.PHONY : allmo allpo
+

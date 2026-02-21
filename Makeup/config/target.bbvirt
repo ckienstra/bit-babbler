@@ -1,0 +1,6 @@
+bbvirt_TYPE = DATA
+bbvirt_DATA_SRCDIR = $(srcdir)/libvirt
+bbvirt_DATA_INSTALLDIR = $(bindir)
+bbvirt_DATA_FILES = bbvirt
+
+INSTALL_DATA = $(INSTALL_PROGRAM)

@@ -1,0 +1,106 @@
+#!/bin/bash
+# This file is distributed as part of the bit-babbler package.
+# Copyright 2015 - 2018,  Ron <ron@debian.org>
+#
+# Example libvirt QEMU hook for cold-plugging BitBabbler devices into
+# newly started virtual machines.  To use this, it must be installed
+# as /etc/libvirt/hooks/qemu (or wherever the equivalent configuration
+# is found on your system), and then libvirtd must be restarted if you
+# did not previously have a 'qemu' hook installed there.  It does not
+# need to be restarted again if you modify an existing script there.
+#
+# This script assumes that you have the udev rules from the bit-babbler
+# package installed and active, and that you have bbvirt(1) configured
+# to assign devices to the guest domains you want them available in.
+#
+# It will use the device assignments from /etc/bit-babbler/vm.conf to
+# trigger cold plug events for each device that should be made available
+# in the guest VM that is being started (which will in turn signal the
+# bbvirt helper script to actually attach them to that guest).
+
+. /etc/bit-babbler/vm.conf
+
+guest_name=$1
+operation=$2
+
+
+# The path where udevadm is found was Helpfully changed by systemd from the
+# original location in /sbin to now be in /bin.  Since we can't be certain
+# what will be in the PATH when this is called, and since we still need to
+# support systems prior to that change, that means we need to search for it
+# ourselves.  If we can't find it in any of the expected places, then fall
+# back to assuming the user's system really does have it in their PATH.
+# If that's not true, this will fail out soon enough when we try to use it.
+UDEVADM="udevadm"
+for f in /bin/udevadm /sbin/udevadm; do
+    if [ -x "$f" ]; then
+        UDEVADM=$f
+        break;
+    fi
+done
+
+
+# Test if a string is valid to use in a constructed variable name.
+# We need to explicitly check this to avoid having "undefined" but wrong things
+# happen if we dereference an invalid indirect variable name.  A "name" in bash
+# is defined as:
+#
+#  'A word consisting only of alphanumeric characters and underscores, and
+#   beginning with an alphabetic character or an under‐score.'
+#
+# With an implicit assumption that all those characters are also only ASCII.
+# We don't need to validate that the first character isn't a digit here, because
+# we know we will always be appending this to a valid prefix string before use.
+# We do want to validate that it's not an empty string though.
+is_valid_as_variable_name()
+{
+    # If we could be sure this would only run with bash 4.3 or later, then
+    # we could use 'shopt -s globasciiranges' and drop the [:ascii:] test,
+    # but Wheezy still has bash 4.2 - alternatively we could force use of the
+    # C locale here to avoid having non-ascii characters collated into the
+    # range a-z, but not being locale agnostic is ugly, so just test against
+    # the :ascii: character class explicitly.
+    [[ -n $1 && $1 != *[^a-zA-Z0-9_]* && $1 != *[^[:ascii:]]* ]]
+}
+
+# Find the shell-friendly "config name" for the given libvirt domain name.
+# If the guest name contains unicode characters, or anything else which would
+# make it illegal to use as part of a bash variable name (like a '-'), then
+# it needs to be explicitly mapped to a valid identifier with a DOMAIN_NAME_*
+# declaration in the config file.
+get_config_for_guest()
+{
+    for n in "${!DOMAIN_NAME_@}"; do
+        if [ "${!n}" = "$1" ]; then
+            config_name=${n#DOMAIN_NAME_}
+            return
+        fi
+    done
+
+    if is_valid_as_variable_name "$1"; then
+        config_name=$1
+    else
+        #echo "Invalid config name '$1'"
+        config_name=''
+    fi
+}
+
+if [ "$operation" = "started" ]; then
+
+    get_config_for_guest "$guest_name"
+
+    if [ -n "$config_name" ]; then
+        devices="DOMAIN_RNG_${config_name}[@]"
+        opts=( -c change -s usb -a "idVendor=0403" -a "idProduct=7840" )
+
+        for d in "${!devices}"; do
+            "$UDEVADM" trigger "${opts[@]}" -a "serial=$d"
+        done
+    fi
+
+fi
+
+# Always return success here, we don't want to abort guest operations.
+exit 0
+
+# vi:sts=4:sw=4:et:foldmethod=marker

@@ -1,0 +1,7 @@
+include Makefile.acsubst.sysctl
+
+sysctl-conf_TYPE = DATA
+sysctl-conf_DATA_SRCDIR = $(top_builddir)
+sysctl-conf_DATA_INSTALLDIR = $(SYSCTL_DIR)
+sysctl-conf_DATA_FILES = bit-babbler-sysctl.conf
+

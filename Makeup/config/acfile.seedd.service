@@ -1,0 +1,19 @@
+# systemd unit for the seedd daemon.
+
+[Unit]
+Description=BitBabbler entropy source daemon
+Documentation=man:seedd(1)
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=local-fs.target shutdown.target
+Conflicts=shutdown.target
+ConditionPathExists=/etc/bit-babbler/seedd.conf
+
+[Service]
+Type=notify
+ExecStart=@EXP_BINDIR@/seedd --config /etc/bit-babbler/seedd.conf
+KillMode=mixed
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_SYS_ADMIN
+
+[Install]
+WantedBy=sysinit.target

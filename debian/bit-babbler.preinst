@@ -1,0 +1,95 @@
+#! /bin/sh
+
+set -e
+
+# summary of how this script can be called:
+#        * <new-preinst> `install'
+#        * <new-preinst> `install' <old-version>
+#        * <new-preinst> `upgrade' <old-version>
+#        * <old-preinst> `abort-upgrade' <new-version>
+# for details, see http://www.debian.org/doc/debian-policy/ or
+# the debian-policy package
+
+
+# This returns true (0) if the conffile belongs to this package, and a modified
+# version of it currently exists which needs to be preserved.  If so, the file
+# will remain untouched.  In all other cases it will return false (1).  If an
+# unmodified verson exists, it will be renamed by appending .dpkg-remove, so
+# that it can be restored if the package upgrade fails, or removed in postinst
+# if the upgrade completes successfully.
+check_conffile()
+{
+    local f=$1
+
+    # Check that the file hasn't already been removed, and that it hasn't been
+    # usurped by some other package (which is unlikely, but would Very Bad for
+    # what we are about to do next).
+    [ -e "$f" ] || return 1
+    dpkg-query -L bit-babbler | grep -F -q -x "$f" || return 1
+
+    local sys_sum=$(md5sum "$f" | sed -e 's/ .*//')
+    local pkg_sum=$(dpkg-query -W -f='${Conffiles}' bit-babbler | sed -n -e "\'^ $f ' { s/ obsolete$//; s/.* //; p }")
+
+    # If it's unmodified, move it aside for deletion if the upgrade succeeds.
+    if [ "$sys_sum" = "$pkg_sum" ]; then
+	mv -f "$f" "${f}.dpkg-remove"
+	return 1
+    fi
+
+    # Otherwise, we'll migrate it to its new form in postinst.
+    return 0
+}
+
+check_seedd_conf()
+{
+    # Just move it out of the way if it's unmodified.  If it is modified, then
+    # in postinst we'll generate a custom seedd.conf based upon its content, to
+    # replace the one that is shipped in the new package.
+    #
+    # Because we don't remove the original conffile here before the new files
+    # are unpacked, dpkg will remember it as an 'obsolete' conffile until the
+    # next package upgrade (by which time it will really have been removed).
+    check_conffile '/etc/default/seedd' || return 0
+}
+
+check_sysctl_conf()
+{
+    local oldconf='/etc/sysctl.d/bit-babbler-sysctl.conf'
+
+    # If this one was modified, we also move it aside so that dpkg will forget
+    # that it was a conffile, and not keep tracking it as 'obsolete' for purge.
+    # This way a purge will do the same thing whether the modified file was
+    # created before or after this upgrade (ie. leave it alone).  We will move
+    # it back again in the postinst to preserve the local admin's configuration
+    # as an override of the packaged version that is now in /usr/lib/sysctl.d
+    if check_conffile "$oldconf"; then
+	mv -f "$oldconf" "${oldconf}.dpkg-backup"
+    fi
+}
+
+case "$1" in
+    install|upgrade)
+	# Version 0.8 adds /etc/bit-babbler/seedd.conf, replacing the previous
+	# daemon configuration options which were set in /etc/default/seedd.
+	dpkg --compare-versions -- "$2" ge-nl '0.8~' || check_seedd_conf
+
+	# Version 0.9 moves /etc/sysctl.d/bit-babbler-sysctl.conf to the
+	# /usr/lib/sysctl.d directory, but we need to preserve the one in
+	# /etc exactly as it is, as an override, if it was modified.
+	dpkg --compare-versions -- "$2" ge-nl '0.9~' || check_sysctl_conf
+    ;;
+
+    abort-upgrade)
+    ;;
+
+    *)
+	echo "preinst called with unknown argument \`$1'" >&2
+	exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0
+
+# vi:sts=4:sw=4:noet

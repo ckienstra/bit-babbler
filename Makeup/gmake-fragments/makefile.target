@@ -1,0 +1,132 @@
+# makeup target build rules
+#
+#  Copyright 2003 - 2010, Ron <ron@debian.org>
+#
+# This file is distributed under the terms of the GNU GPL version 2.
+#
+# As a special exception to the GPL, it may be distributed without
+# modification as a part of a program using a makeup generated build
+# system, under the same distribution terms as the program itself.
+
+ifeq ($(strip $(TARGET_NAME)),)
+  $(error No TARGET_NAME for template)
+endif
+
+ifndef top_srcdir
+  include Makefile.acsubst
+endif
+
+ifndef MAKEUP_DEFAULT_LINKAGE
+  MAKEUP_DEFAULT_LINKAGE = unknown
+endif
+
+ifeq ($(origin EXEEXT),undefined)
+  EXEEXT = {,.exe}
+endif
+
+ifeq ($(origin DSOEXT),undefined)
+  DSOEXT = {.so,.dll}
+endif
+
+# Usually defined in makefile.acsubst.  But may be overridden.
+ifndef MAKEUP_TOP_CONFIG
+  MAKEUP_TOP_CONFIG = $(top_srcdir)/Makeup/Makeup.conf
+endif
+
+
+include $(MAKEUP_TOP_CONFIG)
+include $(MAKEUP_GMAKE_DIR)/makefile.fstools
+include $(MAKEUP_CONFIG_DIR)/target.$(TARGET_NAME)
+
+# FIXME: enable platform tests here...
+#        Not really appropriate anymore, what do we need here?
+#        merge makefile.unix, or move it to makefile.c-c++ ??
+#ifeq platform, posix
+ifneq ($(strip $(MAKEUP_VERBOSE)),)
+  include $(MAKEUP_GMAKE_DIR)/makefile.unix
+else
+ -include $(MAKEUP_GMAKE_DIR)/makefile.unix
+endif
+#endif
+
+
+# Helper function to set a pattern specific vpath
+SET_VPATH_Template = vpath $(1) $(2)
+
+# Evaluate a target_VPATHS string of the form:
+# foo_VPATHS = %.cpp,/mysrc:/moresrc %.h,/myinc %.c,$(srcdir)/csrc
+# into a series of vpath statements like this:
+#   vpath %.cpp /mysrc:/moresrc
+#   vpath %.h   /myinc
+#   vpath %.c   $(srcdir)/csrc
+#
+# The double eval splits each space-separated VPAIR on the commas.
+$(foreach VPAIR,$($(TARGET_NAME)_VPATHS),                       \
+          $(eval $$(eval $$(call SET_VPATH_Template,$(VPAIR)))))
+
+
+# GNU Make 3.80 fails to properly read an eval inside a conditional
+# Fortunately it can include a file with one just fine, or can still
+# be used conditionally with an extra level of indirection such as this.
+
+TARGET_RULES = $($($(TARGET_NAME)_TYPE)_Template)
+
+ifdef MAKEUP_HOST_ARCH
+ifdef $(TARGET_NAME)_ARCH
+ifeq ($(findstring ANY,$($(TARGET_NAME)_ARCH)),)
+ifeq ($(findstring $(MAKEUP_HOST_ARCH),$($(TARGET_NAME)_ARCH)),)
+
+ifeq ($(strip $(MAKECMDGOALS)),)
+  define TARGET_RULES
+    stop_processing : ; @echo "    Not supported on this platform"
+    .PHONY : stop_processing
+  endef
+else
+  define TARGET_RULES
+    $(MAKECMDGOALS) : ; @echo "    Not supported on this platform"
+    .PHONY : $(MAKECMDGOALS)
+  endef
+endif
+
+endif
+endif
+endif
+endif
+
+# We handle the KBUILD type here explicitly to avoid expanding the
+# GET_KBUILD_TARGETS_Template too often, we know that one really is
+# defined so save expanding TARGET_RULES until we use it below.
+ifneq ($($(TARGET_NAME)_TYPE),KBUILD)
+ifeq ($(strip $(TARGET_RULES)),)
+ifneq ($(findstring makefile.unix,$(MAKEFILE_LIST)),)
+  $(error No TARGET_RULES for '$(TARGET_NAME)' of unknown type $($(TARGET_NAME)_TYPE))
+endif
+endif
+endif
+
+$(eval $(call TARGET_RULES,$(TARGET_NAME)))
+
+$(eval $(UPDATE_MAKEUP_Template))
+
+
+# We don't really need to update these unless someone tries to use them,
+# since that is only likely to happen by including them in a target.*
+# definition this seems like the best place for these rules at present.
+$(foreach f,$(subst $(MAKEUP_CONFIG_DIR)/acsubst.,, \
+              $(wildcard $(MAKEUP_CONFIG_DIR)/acsubst.*)),Makefile.acsubst.$(f)) : \
+Makefile.acsubst.% : $(MAKEUP_CONFIG_DIR)/acsubst.% $(top_builddir)/config.status
+	@echo -n "  * Updating $@... "
+	@cd $(top_builddir) && ./config.status $@
+
+$(foreach f,$(subst $(MAKEUP_AC_DIR)/acsubst.,, \
+              $(wildcard $(MAKEUP_AC_DIR)/acsubst.*)),Makefile.acsubst.$(f)) : \
+Makefile.acsubst.% : $(MAKEUP_AC_DIR)/acsubst.% $(top_builddir)/config.status
+	@echo -n "  * Updating $@... "
+	@cd $(top_builddir) && ./config.status $@
+
+
+# Targets we should not to attempt building here.
+Makefile.acsubst : ;
+%.d : ;
+%.cpp : ;
+

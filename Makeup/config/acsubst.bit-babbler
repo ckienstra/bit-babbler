@@ -1,0 +1,6 @@
+include Makefile.acsubst.udev
+
+USB_CPPFLAGS = @USB_CPPFLAGS@
+USB_LDFLAGS = @USB_LDFLAGS@
+USB_LIBS = @USB_LIBS@
+

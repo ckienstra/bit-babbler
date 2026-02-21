@@ -1,0 +1,557 @@
+#!/bin/bash
+# This file is distributed as part of the bit-babbler package.
+# Copyright 2015 - 2021,  Ron <ron@debian.org>
+
+# Default configuration if not explicitly specified.
+config_dir="/etc/bit-babbler"
+config_file="$config_dir/vm.conf"
+verbose=0
+
+# Default to searching the PATH for tools we use.
+seedd="seedd"
+virsh="virsh"
+
+logger_opts=( "--id=$$" '-t' "${0##*/}" )
+log_to_syslog=
+log_to_stderr=1
+
+log()
+{
+    [ -z "$log_to_syslog" ] || logger "${logger_opts[@]}" -- "$*"
+    [ -z "$log_to_stderr" ] || echo "$*" 1>&2
+}
+
+die()
+{
+    log "$0: $*"
+    exit 1
+}
+
+verb()
+{
+    local n=$1
+    shift
+
+    (( verbose < n )) || log "$*"
+}
+
+usage()
+{
+    cat 1>&2 <<EOF
+
+ bbvirt attach|detach <device> [options]
+ bbvirt attach-all|detach-all [<domain>] [options]
+
+  Helper script to hotplug BitBabbler devices into (and back out of) libvirt
+  managed virtual machines, either manually, or triggered by udev events.
+
+  The first form above is used to attach or detach a single device from a VM,
+  and is suitable for use as a hotplug trigger, such as a udev rule.
+
+  The second form is offered as a convenience for the task of attaching or
+  detaching all devices assigned to a particular VM domain (or all of the
+  configured domains if no explicit domain is passed).
+
+  A <device> may be specified by its serial number, its logical address on the
+  USB bus in the form BUSNUM:DEVNUM, or its physical address on the USB bus in
+  the form BUS-PORT[.PORT ...].  A <domain> is the libvirt VM domain name.
+
+  The following options may also be used:
+
+   -C, --config "file"  Use the specified configuration file for the default
+                          assignment of devices to VM domains.
+
+   -c, --connect "URI"  Override the default virsh URI (or the DOMAIN_URI that
+                          is specified in the configuration file).
+
+   -D, --domain "name"  Act on the given domain, overriding any assignment of
+                          the device in the configuration file.
+
+   -b, --busnum "num"   Explicitly specify the USB bus number that the device
+                          is attached to, rather than searching for it.
+
+   -d, --devnum "num"   Explicitly specify the logical USB device number on
+                          the USB bus, rather than searching for it.
+
+       --syslog         Log messages to syslog as well as stderr.
+
+   -n, --dry-run        Don't attach or detach any devices, just show what
+                          would happen if this was a live run.
+
+   -v, --verbose        Be more noisy about what is happening.
+   -?, --help           Shows this usage summary.
+
+EOF
+    exit "$1"
+}
+
+parse_args()
+{
+    while (( $# )); do
+        case $1 in
+            attach|detach)          action=$1; shift; device=$1 ;;
+
+            attach-all|detach-all)  action=${1%-all}
+                                    do_all=1
+                                    if [[ $2 != -* ]]; then
+                                        shift
+                                        domain=$1
+                                    fi
+                                    ;;
+
+            --busnum=*)             printf -v busnum "%03d" "$(( 10#${1#*=} ))" ;;
+            --busnum|-b)    shift;  printf -v busnum "%03d" "$(( 10#$1 ))" ;;
+
+            --devnum=*)             printf -v devnum "%03d" "$(( 10#${1#*=} ))" ;;
+            --devnum|-d)    shift;  printf -v devnum "%03d" "$(( 10#$1 ))" ;;
+
+            --connect=*)            uri=${1#*=} ;;
+            --connect|-c)   shift;  uri=$1 ;;
+
+            --domain=*)             domain=${1#*=} ;;
+            --domain|-D)    shift;  domain=$1 ;;
+
+            --config=*)             config_file=${1#*=} ;;
+            --config|-C)    shift;  config_file=$1 ;;
+
+            --syslog)               log_to_syslog=1 ;;
+
+            --dry-run|-n)           dry_run=1 ;&    # --dry-run implies --verbose
+            --verbose|-v)           (( ++verbose )) ;;
+            -vv)                    (( verbose += 2 ));;
+            -vvv)                   (( verbose += 3 ));;
+            -vvvv)                  (( verbose += 4 ));;
+
+            --help|-\?)             show_help=1 ;;
+
+            *)
+                die "ERROR: unrecognised option '$1', try --help"
+                ;;
+        esac
+        shift
+    done
+}
+
+parse_args "$@"
+
+[ -z "$show_help" ] || usage 0
+
+
+# Import the configuration of which devices belong to which VM domains.
+import_domain_config()
+{
+    [[ $config_file == */* ]] ||
+        config_file="$config_dir/$(basename -- "$config_file" .conf).conf"
+
+    if [ -f "$config_file" ] && [ -r "$config_file" ]; then
+        . "$config_file"
+    else
+        verb 1 "Unable to read config file '$config_file'"
+        exit 0
+    fi
+}
+
+# Test if a string is valid to use in a constructed variable name.
+# We need to explicitly check this to avoid having "undefined" but wrong things
+# happen if we dereference an invalid indirect variable name.  A "name" in bash
+# is defined as:
+#
+#  'A word consisting only of alphanumeric characters and underscores, and
+#   beginning with an alphabetic character or an under‐score.'
+#
+# With an implicit assumption that all those characters are also only ASCII.
+# We don't need to validate that the first character isn't a digit here, because
+# we know we will always be appending this to a valid prefix string before use.
+# We do want to validate that it's not an empty string though.
+is_valid_as_variable_name()
+{
+    # If we could be sure this would only run with bash 4.3 or later, then
+    # we could use 'shopt -s globasciiranges' and drop the [:ascii:] test,
+    # but Wheezy still has bash 4.2 - alternatively we could force use of the
+    # C locale here to avoid having non-ascii characters collated into the
+    # range a-z, but not being locale agnostic is ugly, so just test against
+    # the :ascii: character class explicitly.
+    [[ -n $1 && $1 != *[^a-zA-Z0-9_]* && $1 != *[^[:ascii:]]* ]]
+}
+
+# Build indices mapping config domain IDs (which must include only characters
+# which are valid in variable names) to/from libvirt domain names (which don't
+# restrict the allowed character set anymore).  Given either ID as input, this
+# lets us determine both the config ID and libvirt domain name when needed.
+# They'll only differ when the DOMAIN_NAME_* override is used to explicitly
+# specify the libvirt domain name.
+map_domain_names()
+{
+    import_domain_config
+
+    declare -gA libvirt_domains
+    declare -gA config_domains
+    local n k
+
+    verb 4 "Mapping domain identifiers:"
+
+    # First assume every config ID corresponds to a libvirt guest domain name.
+    for n in "${!DOMAIN_RNG_@}"; do
+        n=${n#DOMAIN_RNG_}
+        libvirt_domains[$n]=$n
+        config_domains[$n]=$n
+    done
+
+    # It's not very likely that someone might have a DOMAIN_URI defined without
+    # a corresponding DOMAIN_RNG, so this is normally redundant, but in theory
+    # it is possible for someone to want to manually add a device to a domain
+    # which currently has its DOMAIN_RNG commented out, but still want to use
+    # the URI from the config instead of specifying that manually too.
+    for n in "${!DOMAIN_URI_@}"; do
+        n=${n#DOMAIN_URI_}
+        libvirt_domains[$n]=$n
+        config_domains[$n]=$n
+    done
+
+    # Then override libvirt_domains for each ID with an explicit DOMAIN_NAME,
+    # and add a config_domains reverse mapping for the real libvirt guest name.
+    for n in "${!DOMAIN_NAME_@}"; do
+        k=${!n}
+        n=${n#DOMAIN_NAME_}
+        libvirt_domains[$n]=$k
+        config_domains[$k]=$n
+    done
+
+    if (( verbose > 3 )); then
+        local s="                    "
+        for n in "${!libvirt_domains[@]}"; do
+            log " config 'DOMAIN_*_$n' ${s:0:15-${#n}}-> libvirt domain ${libvirt_domains[$n]}"
+        done
+        for n in "${!config_domains[@]}"; do
+            log " domain name '$n' ${s:0:19-${#n}}-> config DOMAIN_*_${config_domains[$n]}"
+        done
+    fi
+}
+
+
+# Device array indices
+DA_STRIDE=9
+DA_BUSNUM=1
+DA_DEVNUM=2
+DA_SERIAL=5
+DA_PORTNUM=8
+DA_MAGIC=$'\nD:'
+
+# Import details of available devices in the shell machine readable format.
+get_available_devices()
+{
+    all_devices=()
+
+    # Clear IFS, the leading \n is part of the magic and we don't want it stripped.
+    while IFS= read -r -d '' f; do
+        all_devices+=("$f")
+    done < <( "$seedd" --shell-mr )
+
+    if (( verbose > 3 )); then
+        printf "seedd reported devices:"
+        printf " '%s'" "${all_devices[@]}"
+        printf "\n"
+    fi
+}
+
+# Find a device matching some combination of attributes.
+# get_device_by index match [index match ...]
+get_device_by()
+{
+    local i j compare=( "$@" )
+    selected_device=()
+
+    for (( i = 0; i < ${#all_devices[@]}; i += DA_STRIDE )); do
+
+        # Assert the array is framed with the expected stride and magic.
+        [ "${all_devices[$i]}" = "$DA_MAGIC" ] ||
+            die "Invalid device array magic at element $i '${all_devices[$i]}'"
+
+        # Try the next device if this one doesn't match all attributes
+        for (( j = 0; j < $#; j += 2 )); do
+            index=${compare[$j]}
+            match=${compare[(($j + 1))]}
+            [ "${all_devices[(($i + $index))]}" = "$match" ] || continue 2
+        done
+
+        # Slice all details of the first matching device.
+        selected_device=( "${all_devices[@]:$i:$DA_STRIDE}" )
+        break;
+    done
+}
+
+# Do $action for each available device assigned to domain $1 (with $propagate_opts)
+act_on_all_devices_in_domain()
+{
+    local config_domain=${config_domains[$1]}
+    local devs="DOMAIN_RNG_${config_domain}[@]"
+    local dev
+
+    verb 3 ""
+    verb 3 "${action^}ing all devices for domain '$1' (config '$config_domain')"
+
+    if [ -z "$config_domain" ]; then
+        verb 1 "Domain '$1' has no devices assigned in '$config_file'."
+        return
+    fi
+
+    for dev in "${!devs}"; do
+        verb 4 "Checking for device '$dev'"
+
+        get_device_by "$DA_SERIAL" "$dev"
+
+        if (( ${#selected_device[@]} == DA_STRIDE )); then
+
+            exec_opts=( "$action" "$dev" -D "$config_domain" )
+            exec_opts+=( -b "${selected_device[$DA_BUSNUM]}" )
+            exec_opts+=( -d "${selected_device[$DA_DEVNUM]}" )
+            exec_opts+=( "${propagate_opts[@]}" )
+
+            verb 2 "$0 ${exec_opts[*]}"
+            "$0" "${exec_opts[@]}"
+        else
+            verb 2 "Failed to find device '$dev'."
+        fi
+    done
+}
+
+
+# For attach-all or detach-all, we synthesise a series of attach/detach calls
+# with all the necessary options for each device in the requested domain(s).
+if [ -n "$do_all" ]; then
+
+    map_domain_names
+    get_available_devices
+
+    propagate_opts=( ${config_file:+ -C "$config_file"} )
+    propagate_opts+=( ${uri:+ -c "$uri"} )
+    propagate_opts+=( ${dry_run:+ -n} )
+
+    # Propagate verbose flags up to -vvvv (the maximum level we actually use),
+    # accounting for the fact that dry_run bumps the verbosity level too.
+    v=''
+    for (( i = ${dry_run:-0}; i < verbose; ++i )); do
+        v+='v'
+    done
+    propagate_opts+=( ${v:+ "-${v:0:4}"} )
+
+
+    if [ -n "$domain" ]; then
+
+        # Act on all the devices configured for the given domain
+        act_on_all_devices_in_domain "$domain"
+
+    else
+
+        # Act on all the devices configured for all domains
+        for dom in "${!DOMAIN_RNG_@}"; do
+            act_on_all_devices_in_domain "${dom#DOMAIN_RNG_}"
+        done
+    fi
+
+    exit 0
+fi
+
+
+# We need at least these two to do anything at all below here.
+[ -n "$action" ] || die "No action specified."
+[ -n "$device" ] || die "No device specified."
+
+
+check_or_set_busnum()
+{
+    if [ -z "$busnum" ]; then
+        busnum=$1
+    elif [ "$busnum" != "$1" ]; then
+        die "Device bus $1 != --busnum $busnum."
+    fi
+}
+
+check_or_set_devnum()
+{
+    if [ -z "$devnum" ]; then
+        devnum=$1
+    elif [ "$devnum" != "$1" ]; then
+        die "Device number $1 != --devnum $devnum."
+    fi
+}
+
+
+# Figure out which device we've been asked to act on.
+if [[ $device =~ ^[[:digit:]]{1,3}:[[:digit:]]{1,3}$ ]]; then
+
+    # We were passed a device logical address in the form BUSNUM:DEVNUM
+    printf -v bnum "%03d" "$(( 10#${device%:*} ))"
+    printf -v dnum "%03d" "$(( 10#${device#*:} ))"
+
+    check_or_set_busnum "$bnum"
+    check_or_set_devnum "$dnum"
+
+    get_available_devices
+    get_device_by "$DA_BUSNUM" "$busnum" "$DA_DEVNUM" "$devnum"
+
+    (( ${#selected_device[@]} == DA_STRIDE )) ||
+        die "Failed to find device '$device'"
+
+    devserial=${selected_device[$DA_SERIAL]}
+
+    verb 1 "Device at logical address $bnum:$dnum has serial '$devserial'."
+
+elif [[ $device =~ ^[[:digit:]]+-[[:digit:].]+$ ]]; then
+
+    # We were passed a device physical address in the form BUS-PORT[.PORT ...]
+    printf -v bnum "%03d" "$(( 10#${device%-*} ))"
+    pnum=${device#*-}
+
+    check_or_set_busnum "$bnum"
+
+    get_available_devices
+    get_device_by "$DA_BUSNUM" "$busnum" "$DA_PORTNUM" "$pnum"
+
+    (( ${#selected_device[@]} == DA_STRIDE )) ||
+        die "Failed to find device '$device'"
+
+    devserial=${selected_device[$DA_SERIAL]}
+
+    check_or_set_devnum "${selected_device[$DA_DEVNUM]}"
+
+    verb 1 "Device at physical address $((10#$bnum))-$pnum has serial '$devserial'."
+
+elif [[ $device =~ ^[A-Z0-9]{6,7}$ ]]; then
+
+    # If it wasn't either of the above, assume this may be a serial number.
+    devserial=$device
+
+else
+
+    die "Invalid device identifier '$device'"
+fi
+
+
+# Build an index mapping device serial numbers to (config) domain names.
+map_devices_to_domains()
+{
+    import_domain_config
+
+    declare -gA domains
+    local dom dev devs
+
+    verb 4 "Mapping device serial numbers to domain identifiers:"
+
+    for dom in "${!DOMAIN_RNG_@}"; do
+        verb 4 " config: $dom"
+
+        devs="${dom}[@]"
+        for dev in "${!devs}"; do
+            verb 4 "    dev: $dev"
+            domains[$dev]=${dom#DOMAIN_RNG_}
+        done
+    done
+
+    if (( verbose > 2 )); then
+        for dev in "${!domains[@]}"; do
+            log " device $dev is in domain ${domains[$dev]}"
+        done
+    fi
+}
+
+
+# If the VM domain wasn't explicitly specified, try to find it from the
+# configured device allocations.  It's not an error for it not to be,
+# the udev rule will run this for all devices, even those that we aren't
+# passing through to a VM.
+if [ -z "$domain" ]; then
+
+    map_devices_to_domains
+
+    domain=${domains[$devserial]}
+
+    if [ -z "$domain" ]; then
+        verb 1 "Device '$devserial' is not assigned to any domain."
+        exit 0
+    fi
+
+    # We know the serial number lookup will return the config ID, so we can get
+    # the libvirt domain by just checking if DOMAIN_NAME_* was set for it too.
+    name_config="DOMAIN_NAME_$domain"
+    libvirt_domain=${!name_config:-$domain}
+    config_domain=$domain
+
+else
+
+    # Find the config ID and libvirt domain name to use.  If we don't have any
+    # mapping for the given $domain, then just use that name verbatim, since we
+    # could be here because someone is manually attaching or detaching a device
+    # to a libvirt domain which isn't included in the config file definitions,
+    # and that is an ok thing to be doing if complete automation isn't needed.
+    map_domain_names
+
+    libvirt_domain=${libvirt_domains[$domain]:-$domain}
+    config_domain=${config_domains[$domain]}
+
+    # Check if it's safe to fall back to assuming $domain for this one.
+    [ -n "$config_domain" ] || ! is_valid_as_variable_name "$domain" || config_domain="$domain"
+fi
+
+verb 4 "Domain '$domain' => config '$config_domain', libvirt domain '$libvirt_domain'"
+
+
+# Check if we need to pass an explicit --connect URI to virsh.
+# The $config_domain should already be validated, so we could just check if
+# it is not empty here, but it doesn't hurt to apply the full test here too.
+if [ -z "$uri" ] && is_valid_as_variable_name "$config_domain"; then
+    uri_config="DOMAIN_URI_$config_domain"
+    uri=${!uri_config}
+fi
+
+
+# Check that we were passed, or have determined, the logical address of the
+# device, since that is the only way that we can pass it to virsh at present.
+if [ -z "$busnum" ] || [ -z "$devnum" ]; then
+
+    get_available_devices
+    get_device_by "$DA_SERIAL" "$devserial"
+
+    check_or_set_busnum "${selected_device[$DA_BUSNUM]}"
+    check_or_set_devnum "${selected_device[$DA_DEVNUM]}"
+
+    if [ -z "$busnum" ] || [ -z "$devnum" ]; then
+        die "Could not get bus or device number for '$device'"
+    fi
+fi
+
+
+# Create the foul format that virsh requires us to use for this.
+device_xml()
+{
+    cat <<EOL
+<hostdev mode='subsystem' type='usb'>
+  <source>
+    <address type='usb' bus='$(( 10#$1 ))' device='$(( 10#$2 ))'/>
+  </source>
+</hostdev>
+EOL
+}
+
+
+opts=( ${uri:+ -c "$uri"} "$action-device" "$libvirt_domain" )
+
+# Tell them what we are going to do.
+verb 1 "$virsh ${opts[*]} <xml> --live"
+verb 2 "$(device_xml "$busnum" "$devnum")"
+
+# Do it (maybe).
+[ -n "$dry_run" ] ||
+    "$virsh" "${opts[@]}" <(device_xml "$busnum" "$devnum") --live
+
+# Either way, don't fail at doing it.  This could be called by udev when a
+# device is hotplugged, and we don't really want it to bitch at people just
+# because the domain isn't actually running right now.  It's not necessarily
+# an error for running this to be a no-op.
+#
+# We could try to do some other checks to see if the VM is running first, but
+# it's hard to avoid a race where it might start or stop between checking that
+# and acting on it, so we just try it and either it will work or it won't.
+exit 0
+
+# vi:sts=4:sw=4:et:foldmethod=marker

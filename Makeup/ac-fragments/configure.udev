@@ -1,0 +1,112 @@
+dnl Makeup configure boilerplate.
+dnl
+dnl Copyright 2010 - 2021, Ron <ron@debian.org>
+dnl
+dnl This file is distributed under the terms of the GNU GPL version 2.
+dnl
+dnl As a special exception to the GPL, it may be distributed without
+dnl modification as a part of a program using a makeup generated build
+dnl system, under the same distribution terms as the program itself.
+
+dnl There are platforms where we know udev won't be present, so don't bother
+dnl testing for it at all there unless someone explicitly passes --with-udev.
+mu_expect_udev=no
+
+case $host in
+    *-*-linux* )
+	mu_expect_udev=yes
+    ;;
+esac
+
+dnl Option, check, and substvars for libudev.
+dnl --with-udev="rules only" is handled as a special case where libudev support
+dnl is not needed or wanted, but UDEV_RULES_DIR is for installing rules files.
+AC_ARG_WITH([udev],
+            [AS_HELP_STRING([--with-udev],
+                            [use libudev for device detection (default yes on Linux, else no)])],
+            [mu_cv_with_udev=$withval],
+            [mu_cv_with_udev=$mu_expect_udev])
+
+dnl Since udev merged with systemd, upstream claims to no longer support
+dnl static linking.  In practice this means Wheezy was the last release
+dnl to ship with libudev.a, but even there support for it is crappy - as
+dnl it uses clock_gettime but libudev.pc does not declare the dependency
+dnl on librt required for that before it was moved to libc (for Jessie).
+dnl So now that even Wheezy-LTS is officially EOL, there's not much point
+dnl in us working around its brokenness, all we can do is warn users that
+dnl they can either have libudev or (maybe) static linking (if nothing
+dnl else required is also broken for that, which is far from assured in
+dnl these Modern Times We Live In).
+AS_IF([test "$mu_cv_with_udev" != no],[
+  AS_IF([test "$mu_cv_enable_shared" = no],[
+    AC_MSG_WARN([libudev does not support static linking])
+    mu_cv_with_udev="rules only"
+  ],
+  [test "$mu_cv_with_udev" != "rules only"],[
+    AC_CHECK_LIB([udev],[udev_new],
+		 [
+		    AC_DEFINE([HAVE_LIBUDEV],[1],[libudev is available])
+		    UDEV_CPPFLAGS=
+		    ACM_PKG_CONFIG_GET_LIBS([UDEV_LIBS],[libudev],[udev])
+		    mu_cv_with_udev=yes
+
+		    dnl The udev_device_get_tags_list_entry function was added in udev 154
+		    dnl and udev_device_get_sysattr_list_entry was added in udev release 167,
+		    dnl which is newer than some current distro releases are shipping still.
+		    dnl RHEL/CentOS 6 at least appears to ship udev 147 and it isn't EOL yet.
+		    ACM_PUSH_VAL([$0],[LIBS],[-l$UDEV_LIBS])dnl
+		    AC_CHECK_FUNCS([udev_device_get_tags_list_entry udev_device_get_sysattr_list_entry])
+		    ACM_POP_VAR([$0],[LIBS])dnl
+		 ],[
+		    AS_IF([test "$mu_cv_with_udev" != auto],[
+			AC_MSG_WARN([libudev not found])
+			ACM_ADD_MISSING_DEP([libudev-dev (or configure --without-udev)])
+		    ])
+		    mu_cv_with_udev=no
+		 ])
+  ])
+])
+
+dnl The udev.pc only defines the udevdir root, so we still need to construct
+dnl the rules directory from that ourselves either way.  Don't bother to set
+dnl UDEV_RULES_DIR if we're building --without-udev.  It being empty provides
+dnl a signal to not try and install any rules in that case too.
+dnl
+dnl There's some additional hackery we need to do here, because as with the
+dnl rest of systemd, the udev.pc doesn't respect any alternative prefix, it
+dnl simply hardcodes what systemd/udevd themselves were built with.  In the
+dnl case of udev it is even worse though, because it won't search alternative
+dnl directories to what it was build with.  At present, rules are only ever
+dnl read from /etc, /run, or whatever UDEVLIBEXECDIR was set to when udev was
+dnl built (typically either /lib or /usr/lib).
+dnl
+dnl So right now, the least horrid thing we can do is, if we are building with
+dnl --prefix=/usr, then we install rules to the vendor rules dir reported by
+dnl udev.pc, otherwise we install them to the /etc/udev/rules.d directory.
+dnl If users need or want something different to that then they can explicitly
+dnl override the UDEV_DIR variable.  For --prefix=/usr/local, we can't usefully
+dnl install rules to $libdir/udev, because udev quite simply won't look there.
+dnl
+dnl The fallback for ACM_PKG_CONFIG_GET_VAR here should probably instead be
+dnl $EXP_LIBDIR/udev, but on systems with "split usr" the vendor rules are all
+dnl installed in /lib, and on those with "merged usr" both /lib and /usr/lib
+dnl point to the same place anyway, so it's probably the safest path to default
+dnl to here for now if pkg-config support is not available.  Especially since
+dnl in the "split" case, udevd will only look in one of those locations.  This
+dnl one in particular is even more awful than the usual systemd-grade mess is.
+AS_IF([test "$mu_cv_with_udev" != no && test -z "$UDEV_RULES_DIR"],[
+      ACM_IF_VENDOR_BUILD([ACM_PKG_CONFIG_GET_VAR([UDEV_DIR],[udev],[udevdir],[/lib/udev])],
+                          [AC_MSG_CHECKING([for UDEV_DIR])
+                           UDEV_DIR="/etc/udev"
+                           AC_MSG_RESULT([$UDEV_DIR (for prefix=$EXP_PREFIX)])
+                          ])
+      UDEV_RULES_DIR="$UDEV_DIR/rules.d"
+    ])
+
+dnl We don't usually expect people to mess with these two.
+AC_SUBST([UDEV_CPPFLAGS])
+AC_SUBST([UDEV_LIBS])
+
+dnl But this one they might want to override in some cases.
+AC_ARG_VAR([UDEV_RULES_DIR], [where to install udev rules])
+

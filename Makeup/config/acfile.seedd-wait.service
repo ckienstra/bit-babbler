@@ -1,0 +1,83 @@
+# systemd sequence point for services requiring good initial seed entropy.
+
+[Unit]
+Description=Wait for initial kernel entropy seeding
+Documentation=man:seedd(1)
+DefaultDependencies=no
+After=seedd.service
+
+# Ordinarily, we want to block everything which might run after local-fs.target
+# until either we have good seed entropy, or know that we definitely won't be
+# getting it from seedd, or we time-out and give up waiting for it. But if this
+# (or anything else) failing lands us at the emergency.target, then systemd may
+# already consider the local-fs.target has been reached, so if people try to
+# enter a normal system mode again with `systemctl default` as it prompts them
+# to, then it won't block here anymore, and will start everything else up as if
+# this succeeded.  But if this still fails then when the timeout expires, they
+# will suddenly and without explanation, be thrown back into emergency mode
+# again.  Unless they did something like ssh in during that window, in which
+# case they'll unlock the achievement of being in single-user mode while being
+# logged in with multiple users simultaneously.
+#
+# So to avoid the cognitive dissonance of seeing that they have both tea and
+# no-tea, we need to set up a second roadblock at sysinit.target, which should
+# prevent starting most things which the emergency.target didn't itself start.
+# The only nasty part then is that syslog is disabled by emergency.target, so
+# it may be tricky to discover why they keep being thrown back into it, but
+# there's not a whole lot we can do here to solve that quirk of systemd.
+Before=local-fs.target sysinit.target
+
+# In theory this should probably be Requires=, since this will fail if seedd
+# is not running (though strictly speaking, an instance of seedd that is not
+# managed by systemd would still suffice) - but the main reason not to use a
+# Requires dependency here is so that this will not automatically be restarted
+# any time that seedd.service is.  This really only needs to run once at boot,
+# and if there are other units which do block hard on this one with a Requires
+# dependency of their own, the restart would cascade all the way down through
+# those too - and they almost certainly should not be restarted (or stopped
+# completely!) just because seedd was.  On the off-chance this is the desired
+# behaviour for some use case, it is still possible to edit this unit, or use
+# a drop-in to upgrade this relationship to Requires - but you should remember
+# that seedd will be automatically restarted if the package is upgraded, so it
+# would be unwise for that to trigger a restart of anything which would be Bad
+# if it happens in the middle of a dist-upgrade or similar.
+Wants=seedd.service
+
+# There should be no reason to ever start this manually, it only exists to
+# provide a sequence point during early boot, and a check that the kernel was
+# seeded with good entropy for things which require that.  So starting it
+# manually after boot is too late for the former, and useless for the latter,
+# since other units need to bring it in themselves if they Want or Require it.
+# Likewise, as a oneshot, there is no reason to ever stop this manually, and
+# that could in fact be actively "harmful", since it would also stop any unit
+# which did Require it, even though what they actually require hasn't changed.
+RefuseManualStart=yes
+RefuseManualStop=yes
+
+# Another option for maximally paranoid systems would be something like the
+# following, which would put the system into single-user mode if we were unable
+# to seed the kernel sufficiently at boot.  But you could also do something a
+# bit less aggressive in the same way, starting only a limited set of emergency
+# services (but more than just a single-user login) in that case.
+#OnFailure=emergency.target
+#OnFailureJobMode=replace-irreversibly
+
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Wait for at least one QA checked block of bits to seed the OS kernel pool,
+# polling for that 4 times/sec, and reporting failure if it could not be done
+# in less than 30 seconds.  Output enough verbosity to show in the system log
+# what we are doing and when it happens.
+ExecStart=@EXP_BINDIR@/bbctl -v --waitfor Kernel:2500:250:30k
+
+# Belt and braces, have systemd fail it if there was no result in 45 seconds.
+# We want to limit the worst case of preventing at least a minimal boot
+# proceeding to give admin access if something really went Terribly Wrong.
+TimeoutStartSec=45
+
+
+[Install]
+WantedBy=seedd.service

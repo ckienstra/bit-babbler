@@ -1,0 +1,377 @@
+.\"                                      Hey, EMACS: -*- nroff -*-
+.\" First parameter, NAME, should be all caps
+.\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
+.\" other parameters are allowed: see man(7), man(1)
+.TH BBVIRT 1 "January 2, 2018"
+.\" Please adjust this date whenever revising the manpage.
+.\"
+.\" Some roff macros, for reference:
+.\" .nh        disable hyphenation
+.\" .hy        enable hyphenation
+.\" .ad l      left justify
+.\" .ad b      justify to both left and right margins
+.\" .nf        disable filling
+.\" .fi        enable filling
+.\" .br        insert line break
+.\" .sp <n>    insert n+1 empty lines
+.\" for manpage-specific macros, see man(7)
+.SH NAME
+bbvirt \- hotplug BitBabbler devices into libvirt managed domains
+
+.SH SYNOPSIS
+.B bbvirt
+.I action
+.RI [ options ]
+
+.BR "bbvirt attach" | detach
+.I device
+.RI [ options ]
+
+.BR "bbvirt attach\-all" | detach\-all
+.RI [ domain ]
+.RI [ options ]
+
+
+.SH DESCRIPTION
+The \fBbbvirt\fP program is an attempt to take some of the pain out of what is
+currently required to distribute multiple USB devices between the host and
+guest virtual machines.  While there are several ways in which this may be
+configured and managed, at present none of them actually provide a complete and
+coherent solution on their own, all of them fall short of the mark in some
+significant and annoying way.  The aim here is to piece together enough of
+those hacks to actually get all of the functionality that we want now, until
+the libvirt native support for this improves enough to not need it anymore.
+
+At present this deals with libvirt managed QEMU/KVM virtual machines.
+
+.SS What do we want?
+The ideal behaviour here is pretty simple.  Given some arbitrary number of
+BitBabbler devices, we should be able to assign them to either the host machine,
+or to a guest VM running on it, and once we do that they should behave in the
+normal manner expected of any USB device.
+
+.IP - 2
+If they are plugged in when the guest machine is started, they should be seen
+by that machine as they would be by the host.
+
+.IP - 2
+If they are plugged in after the machine is started, they should be hotplugged
+into that machine as they would be on the host.
+
+.IP - 2
+If they are unplugged while the machine is running, they should be cleanly
+removed from it, as they would be on the host.
+
+
+.SS Why can't we have it?
+Right now, libvirt gives us two ways that we can assign USB devices from the
+host to a guest domain.
+
+.IP - 2
+We can assign them by their USB vendor and product ID.  But that only works
+when there is just a single device of that type in the host.  Which is pretty
+useless in most of the cases that we care about here, where the host and each
+of the guests are likely to have one or more BitBabbler devices of their own
+assigned to them.
+
+.IP - 2
+We can assign them by their logical address on the USB bus.  But that isn't a
+constant that we can statically configure for the domain.  Every time a device
+is plugged in, or replugged, or reset, or the host machine is rebooted, that
+address is likely to change since it is dynamically allocated when the device
+is enumerated on the bus.
+
+.PP
+There is a third way, but it relies on bypassing the normal libvirt
+configuration to make direct use of the QEMU ability to assign a device by its
+physical address on the bus.  Which is better, but still not a magic bullet
+since it relies on plugging exactly the same devices into exactly the same
+ports every time (and on having those ports enumerated in the same way by the
+host on every reboot, which isn't guaranteed either).  It also forces us to
+jump through other hoops, since we then need additional complication to manage
+the access permissions of the device manually outside of libvirt, but still
+in coordination with it.
+
+The even bigger failing, which all of those methods have in common, is they all
+depend on the device already being plugged in before the guest is started.  If
+it is inserted after the guest is started, or removed and replugged while the
+guest is running, or if the host bus or a hub bounces causing a reconnect, then
+the device will not be (re)attached to the guest.  The only way to fix that if
+it happens is to manually reattach the device with an arcane incantation in XML
+(which relies on you knowing the new address of the device), or to completely
+power down and restart the guest.  Not the pinnacle of user-friendly operation
+that we are looking for here.
+
+
+.SS What can we do about it?
+There was a patch submitted to libvirt some years back which would have allowed
+a device to be specified by both its USB product ID and its serial number, but
+that got some push-back, and so far has still not been applied upstream.  That
+would have gone a long way toward making this both easy and clean, leaving us
+only with the hotplug aspect to deal with.  We'll leave grumpy snark about that
+as an exercise for the reader\ ...
+
+Another alternative is we can delegate finding the device's logical address to
+a hotplug manager like \fBudev\fP(7).  This is attractive in the sense that we
+can know when the address of a device changes and what it changes to, but
+\fBudev\fP itself isn't very friendly to the idea of local admin customisation
+(while it is possible to do, it seems to be getting increasingly strongly
+discouraged) and using it still requires some external glue to translate its
+events into something that libvirt can act on to configure the guest machine.
+
+The \fBbbvirt\fP program provides that glue, and a user friendly method of
+assigning which devices should belong to which guest domains, and a front end
+that can be invoked manually or by other admin controlled tasks to quickly and
+easily add or remove BitBabbler devices from any of the running guest machines.
+
+But the limitation this approach has, is that it can't easily know when a guest
+machine is started which should have devices that are already plugged in added
+to it.  In theory we could add them to its persistent domain definition, but
+that has its own problems because we can only add devices by their ephemeral
+logical address, and we can't guarantee that we will get called to remove them
+from the domain again when that address becomes invalid (like if the host is
+suddenly powered off or it is otherwise not cleanly shut down), so we could end
+up with many stale entries accumulating in the persistent domain configuration,
+which could later match some completely different device to what we had wanted
+attached to it.  Which means until that somehow gets fixed, it's only safe to
+add them to a live guest domain, so that they will always be removed again when
+it is halted, no matter how it ended up getting halted.
+
+Clearly we've still got some way to go to get to our ideal here.
+
+
+.SS What if we hit it with *two* hammers?
+There appears to be only two ways that we can get notified of a guest machine
+being started at present.  One involves running yet another daemon process,
+which would do little more than just sit around waiting for someone to start a
+guest so it could tell us about that.  But then we'd have yet another thing to
+configure, yet another process running, and yet more problems with figuring out
+how to ensure we don't lose a race when the host is booted, between getting the
+initial set of device events, that process being ready and active, and any
+guests that will be autostarted at boot actually starting.
+
+The other way is to use a libvirt hook.  Which in turn has the problem of not
+actually allowing us to run any libvirt functions from it, which we need to do
+in order to attach the device to the host.  And which we can't guarantee that
+we can just install by default, because there can be only one such hook on the
+system, which the local admin may already be using ...
+
+There is a third way, but that would involve requiring the local admin to start
+all guest machines through a wrapper of our own, instead of via whatever
+mechanism they already know and use.  Which doesn't scale to support other USB
+devices in the same situation, among the many ways that would be a horrible
+solution to inflict on people.
+
+But there is a loophole we can exploit.  We can use the libvirt qemu hook to
+trigger a change event for \fBudev\fP, which can in turn invoke \fBbbvirt\fP
+in much the same way that would happen if the device was really hotplugged,
+which gives us the extra layer of indirection we need to be able to safely do
+that from the hook.  Rube Goldberg would be proud, and some of the pieces may
+require hand-assembly, but with all of this in place, we can have something
+resembling normal USB functionality in the guest machines.
+
+It's not pretty, but it will work with what we have to work with.
+
+.SS Ok, just tell me where to hit it.
+To string this together, you'll need to ensure all of the following:
+
+.IP - 2
+The \fBudev\fP(7) rules from the bit\-babbler package are installed.  If you
+installed this from the Debian packages that should already be done.  If you
+didn't, you will need to install the rules that are found in
+\fIdebian/bit\-babbler.udev\fP from the source package to a suitable place on
+your system (probably \fI/etc/udev/rules.d\fP).
+
+.IP - 2
+The \fBbbvirt\fP(1) script is installed in a place where the \fBudev\fP rules
+will find it.  If you didn't install this from the Debian packages, and it
+isn't in \fI/usr/bin\fP, then you'll need to tweak the \fBudev\fP rules to suit.
+
+.IP - 2
+The devices you wish to use in guest machines, and the machines you wish to
+use them in, are specified in the \fBbbvirt\fP configuration file.  The default
+location for that is \fI/etc/bit\-babbler/vm.conf\fP.  If you wish to use a
+different file you will need to pass its location with the \fB\-\-config\fP
+option in the \fBudev\fP rules, and update the hook script use that file too.
+The details of what you can put in that file are described in the
+\fBCONFIGURATION OPTIONS\fP section below.
+
+.IP - 2
+The libvirt hook file is installed.  If all the above is done, then devices
+will be added to the running guest machines if they get plugged in while the
+guest is running.  This last step ensures devices which are already plugged in
+will be added to newly started guests too (which includes guests that are
+started automatically when the host machine boots).
+
+Until there is some safe way we can install this without conflicting with or
+overwriting an existing hook, everyone will need to do this step manually.  If
+you have installed the Debian packages, then the example hook script that
+we've provided for this can
+be found in \fI/usr/share/doc/bit\-babbler/examples/qemu\-hook\fP.  If you
+didn't it can be found in \fIlibvirt/qemu\-hook\fP of the source package.
+
+You will need to install that file as \fI/etc/libvirt/hooks/qemu\fP, or merge
+its content with the existing \fIqemu\fP file there if you already have that
+hook set.  If that file did not previously exist, you will need to restart
+\fBlibvirtd\fP(8) to get it to begin using it.
+
+.PP
+That should cover all of the needed automation, but you can also attach and
+detach devices manually at any time too.  The details of doing that will be
+described in the following section.  Otherwise, with all the above done, there
+is no other reason to need to invoke \fBbbvirt\fP directly.
+
+
+.SH OPTIONS
+There are two primary modes of operation for \fBbbvirt\fP which are selected
+by the initial action option.  If the action to perform is \fBattach\fP or
+\fBdetach\fP then only a single device will be acted upon, and which device
+that should be must be specified explicitly, even if there is only one device
+present on the host at the time.  When invoking \fBbbvirt\fP manually, the
+\fIdevice\fP may be specified by its serial number, its logical address on the
+bus (in the form \fIbusnum\fP:\fIdevnum\fP, given as decimal integers), or its
+physical address on the bus (in the form
+\fIbusnum\fP\-\fIport\fP[\fI.port\fP\ ...]).
+
+If the action to perform is \fBattach\-all\fP or \fBdetach\-all\fP, then the
+device(s) to act upon are selected by \fIdomain\fP association instead.  If a
+\fIdomain\fP is explicitly specified, then all devices which are assigned to
+that guest domain in the configuration file will be acted upon in the same way
+as if \fBbbvirt\fP was invoked for each of them individually with the
+\fBattach\fP or \fBdetach\fP action.  If no \fIdomain\fP is provided, then all
+of the configured guest domains will be acted upon in this way.
+
+The following additional options are available:
+
+.TP
+.B \-C, \-\-config
+Specify an alternative configuration file to import the device assignments
+from.  If the path to the file is not provided explicitly, then it will be
+looked for in the \fI/etc/bit\-babbler\fP directory (with a \fI.conf\fP
+suffix).
+
+.TP
+.BI "\-c, \-\-connect=" URI
+Specify the \fBvirsh\fP(1) connection \fIURI\fP to use.  This will override
+a \fBDOMAIN_URI\fP set for the domain in the configuration file.  If that is
+not set using either of these methods then the \fBvirsh\fP default for the
+user running \fBbbvirt\fP will be used.
+
+.TP
+.BI "\-D, \-\-domain=" name
+Specify the libvirt domain to act upon.  This may be used to override the
+device allocation from the configuration file when \fBbbvirt\fP is invoked
+manually, or to act on a device or domain that is not currently specified in
+the configuration file.
+
+.TP
+.BI "\-b, \-\-busnum=" num
+Specify the USB bus number that the device is attached to.  This option is
+mostly used to avoid \fBbbvirt\fP needing to look this up when it is already
+known (such as when it is called from a \fBudev\fP rule).  There isn't usually
+much reason to pass this if invoking \fBbbvirt\fP manually, since you can just
+specify the device by its logical or physical address instead.
+
+.TP
+.BI "\-d, \-\-devnum=" num
+Specify the USB device number that the device is currently assigned.  Together
+with the bus number, this forms the logical address of the device.  This option
+is mostly used to avoid \fBbbvirt\fP needing to look this up when it is already
+known (such as when it is called from a \fBudev\fP rule).  There isn't usually
+much reason to pass this if invoking \fBbbvirt\fP manually, since you can just
+specify the device by its logical address instead.
+
+.TP
+.B \-n, \-\-dry\-run
+Don't attach or detach any devices, just show what would be attempted if this
+was a live run.  This option implies a minimal level of \fB\-\-verbose\fP, but
+the verbosity may be increased further by also passing that option explicitly.
+
+.TP
+.B \-v, \-\-verbose
+Make more noise about what is really going on.  It may be passed multiple times
+to increase the verbosity further.
+
+.TP
+.B \-?, \-\-help
+Show a brief summary of the available options.
+
+
+.SH CONFIGURATION OPTIONS
+The \fBbbvirt\fP configuration file contains variable assignments using the
+\fBbash\fP(1) shell syntax.  It is sourced as a shell snippet, so you could in
+principle construct the configuration for each domain dynamically, but most
+typically a simple static assignment of devices to domains will suffice.  If
+you do elect to run code in it, you should be very defensive about namespacing
+any other variables you use, or any other side effects you might cause to
+happen.  Any number of guest domains may be configured in it.
+
+For each guest domain, three variables control the behaviour of \fBbbvirt\fP:
+
+.TP
+.BI DOMAIN_NAME_ domain = guestname
+This variable is optional if \fIguestname\fP and \fIdomain\fP are the same.
+It must be used if the libvirt guest name contains any characters which would
+not be valid for use as a shell variable name (i.e. anything that is not ASCII
+a-z, A-Z, 0-9, or the underscore).  If set, it indicates that the corresponding
+\fBDOMAIN_*_\fP\fIdomain\fP variables shown below are configuration for the
+libvirt guest domain \fIguestname\fP instead of one with the name \fIdomain\fP.
+
+When specifying a domain option for \fBbbvirt\fP to act upon, you may use
+either of the \fIdomain\fP or \fIguestname\fP identifiers interchangeably.
+
+.TP
+.BI DOMAIN_URI_ domain = URI
+This variable is optional, and sets the \fBvirsh\fP(1) connection \fIURI\fP to
+use when attaching or detaching devices from the given \fIdomain\fP.  If the
+\fB\-\-connect\fP option is explicitly passed to \fBbbvirt\fP it will override
+what is set here.  If the connection \fIURI\fP is not set using either of these
+methods then the \fBvirsh\fP default for the user running \fBbbvirt\fP will be
+used (which would normally be root if run from \fBudev\fP).
+
+.TP
+.BI DOMAIN_RNG_ domain =( " device serial numbers \fR... " )
+This variable is required if automatic passthrough of devices to a domain is
+desired.  It is a bash array, populated with a space separated list of all the
+device serial numbers that you want assigned to \fIdomain\fP.  It is not an
+error for devices to be listed here which are not currently plugged in.  It is
+important to ensure that devices are only assigned to one \fIdomain\fP though,
+and that devices assigned to guest domains will not be used by a \fBseedd\fP(1)
+instance running on the host (which means the \fBseedd\fP configuration needs
+to be passed an explicit list of the devices that it may use too).
+
+The device serial number must always be used here.  You cannot specify a
+device by its logical or physical address on the bus (like you can in most
+other places where we take a device ID).
+
+
+.SH FILES
+.TP
+.I /etc/bit\-babbler/vm.conf
+The default configuration file for assigning BitBabbler devices to libvirt
+managed virtual machine domains.
+
+.TP
+.I /lib/udev/rules.d/60\-bit\-babbler.rules
+The default \fBudev\fP(7) rules granting direct device access to users in the
+group \fBbit\-babbler\fP, enabling USB autosuspend when the device is idle, and
+invoking \fBbbvirt\fP to handle device hotplug for virtual machines.
+These can be overridden by creating \fI/etc/udev/rules.d/60\-bit\-babbler.rules\fP
+and populating it with your own rules.
+
+.TP
+.I /etc/libvirt/hooks/qemu
+The libvirt hook script needed to enable cold-plugging of already present
+devices into newly (re)started virtual machines.
+
+
+.SH SEE ALSO
+.BR seedd (1),
+.BR virsh (1).
+
+
+.SH AUTHOR
+.B bbvirt
+was written by Ron <ron@debian.org>.  You can send bug reports, feature requests,
+praise and complaints to support@bitbabbler.org.
+

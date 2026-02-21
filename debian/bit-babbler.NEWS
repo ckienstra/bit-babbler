@@ -1,0 +1,32 @@
+bit-babbler (0.8) unstable; urgency=medium
+
+  The 0.8 release changes the way which seedd(1) is normally configured when
+  started as a system daemon.  Previously, configuration options could be set
+  in /etc/default/seedd, but systemd doesn't support handling those in the way
+  which we did so in the SysV init script.  So now, when seedd is started from
+  either the seedd.service systemd unit or the SysV init script, it will be
+  configured using the options set in /etc/bit-babbler/seedd.conf instead.
+
+  If you have customised the configuration in /etc/default/seedd then it will
+  automatically be preserved during upgrade by generating an equivalent custom
+  seedd.conf for you.  The old configuration file content will be retained in
+  /etc/default/seedd.dpkg-old, in case there are other things in there (like
+  comments) that you do wish to keep a note of somewhere, but it can be safely
+  removed when there is nothing in it which you still need.  Nothing in this
+  package will use anything from /etc/default after this.
+
+  For reference, the packaged default seedd.conf will still be installed (in
+  the same way as if you had selected "keep your currently-installed version"
+  at the dpkg conffile prompt) as /etc/bit-babbler/seedd.conf.dpkg-new for you
+  to inspect.  You can safely modify the generated seedd.conf however you wish
+  after this, as it will not be (re)generated again on future updates.  Future
+  updates will be handled with the normal dpkg mechanism for conffiles when
+  there are any changes in the packaged and locally installed versions which
+  need to be resolved.
+
+  If you have not modified /etc/default/seedd, then it will simply be removed
+  and the equivalent default seedd.conf will be installed, making this change
+  (even more) completely transparent to you.
+
+ -- Ron Lee <ron@debian.org>  Thu, 08 Feb 2018 10:26:52 +1030
+

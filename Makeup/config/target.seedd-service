@@ -1,0 +1,6 @@
+include Makefile.acsubst.systemd
+
+seedd-service_TYPE = DATA
+seedd-service_DATA_SRCDIR = $(top_builddir)
+seedd-service_DATA_INSTALLDIR = $(SYSTEMD_UNIT_DIR)
+seedd-service_DATA_FILES = seedd.service seedd-wait.service

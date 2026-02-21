@@ -1,0 +1,7 @@
+include Makefile.acsubst.udev
+
+udev-rules_TYPE = DATA
+udev-rules_DATA_SRCDIR = $(top_builddir)
+udev-rules_DATA_INSTALLDIR = $(UDEV_RULES_DIR)
+udev-rules_DATA_FILES = 60-bit-babbler.rules
+

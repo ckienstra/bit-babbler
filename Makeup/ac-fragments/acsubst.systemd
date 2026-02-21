@@ -1,0 +1,7 @@
+# @configure_input@
+#
+# Makeup makefile boilerplate for systemd.
+# Copyright 2018, Ron Lee <ron@debian.org>
+
+SYSTEMD_UNIT_DIR = @SYSTEMD_UNIT_DIR@
+

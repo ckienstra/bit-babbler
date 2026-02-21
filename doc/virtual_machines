@@ -1,0 +1,347 @@
+  Using BitBabbler devices in a virtual machine
+  =============================================
+
+One of the early motivations behind this project was the need for a good
+entropy source inside virtual machines.  There are several ways to do this,
+including using the virtio-rng device supported by QEMU and/or EGD to import
+entropy from the host to the guest, but our initial experience with that was
+somewhat underwhelming.  Hopefully it will have improved and be more stable
+and usable by the time people from the future read this -- but for now this
+document is just going to focus on what is needed to use a BitBabbler device
+directly inside a VM.
+
+In theory, that should be a simple task.  Just use USB-passthrough to grant
+the guest system access to the desired device(s), and then just use it in the
+same way that you normally would.  But I wouldn't be writing this if things
+were really that easy ...
+
+The examples here are centered around a KVM/QEMU system managed by libvirt,
+but the general principles of what is needed should extrapolate fairly well
+to other virtualisation systems too.
+
+
+The best and most complete solution that we have at present requires erecting
+some scaffolding around libvirt to provide the support for USB hotplug which
+it is currently missing and help us plaster over some of the other cracks that
+needed functionality would otherwise fall into and become lost.
+
+There are more details on all that in the bbvirt(1) manual page, what follows
+here is the quick-start guide for assembling it.
+
+
+  Install the udev rules.
+  -----------------------
+
+If you installed the bit-babbler Debian package, this is already done.  If you
+didn't, you'll want to copy the file debian/bit-babbler.udev to somewhere like
+/etc/udev/rules.d/60-bit-babbler.rules.
+
+Ensure that the two rules which RUN bbvirt in it point to the actual location
+of that script on your system.  By default it is expected in /usr/bin, but if
+you built the bit-babbler source with ./configure && make and didn't change
+the prefix it may be in /usr/local/bin instead.
+
+
+  Configure the device assignments that you want.
+  -----------------------------------------------
+
+The /etc/bit-babbler/vm.conf file is where you define the defaults you want to
+use for which device will be assigned to which virtual machine.  If you are
+also running seedd(1) on the host machine you will need to explicitly define
+which devices will be used on the host too, which is set in /etc/default/seedd
+if you're using the Debian package init script (or something derived from it)
+to start that daemon.
+
+
+  Install the libvirt hook.
+  -------------------------
+
+The example file for that can be found in libvirt/qemu-hook of the bit-babbler
+source package, or /usr/share/doc/bit-babbler/examples/qemu-hook if the Debian
+binary package is installed.  It either needs to be copied to be the libvirt
+'qemu' hook (typically /etc/libvirt/hooks/qemu) or merged with whatever is
+already there if you do already have a qemu hook installed, since there can be
+only one such hook with current libvirt (which is why we can't safely install
+this automatically at present).
+
+If there was no qemu hook installed previously, you will need to restart the
+libvirtd process once this is done (but that won't disturb any of your already
+running guests).
+
+
+  Share and enjoy!
+  ----------------
+
+If that all went as planned, the BitBabbler devices you assigned to the guest
+domains should now be hotplugged into them whenever the devices are inserted
+or the guest machine is started.
+
+If the devices were already plugged in, and the guests were already running,
+you can synthesise a udev event to attach them to the guests immediately with:
+
+ # udevadm trigger -c change -s usb -a "idVendor=0403" -a "idProduct=7840"
+
+
+  Guest domain configuration.
+  ---------------------------
+
+With the above all in place, there is no need to make any change to the guest
+domain definitions for the devices you want attached to them.  They will be
+dynamically added to them using the logical address reported by udev.
+
+There is one change still worth making to them if you haven't already though.
+To get the full throughput from the BitBabbler devices they will need to be
+attached to a USB2.0 capable port in the guest.  However the default libvirt
+configuration generally only creates a USB1.1 host controller, which will be
+a significant bottleneck for getting bits out of them.
+
+The easiest way to ensure that is to simply change the USB <controller> to be
+an XHCI device, since it will automatically support both USB3.0 devices and
+all lower speed devices without the need to individually configure a full set
+of companion controllers for lower speed devices.  It's also supposed to be
+a more efficient driver.  It's a bit more bleeding edge than the others, and
+may have some issues to shake out (the Debian kFreeBSD kernel did not support
+XHCI when we were testing the BitBabbler support for it, and bugs are still
+being fixed in the Linux kernel for it) but mostly it's been working quite
+well for us.
+
+To do that, you'll want to replace the USB <controller> section with something
+like this:
+
+ <controller type='usb' index='0' model='nec-xhci'>
+   <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x0'/>
+ </controller>
+
+Where 'slot' is any free PCI slot not already in use by any other controller
+in the guest.
+
+
+===============================================================================
+
+You can fairly safely ignore everything below here now, as the above is both
+all you should need and our best recommendation so far.  What follows remains
+mostly as a historical note of things we tried that fell short of being an
+entirely satisfactory solution in one or (usually) more ways.
+
+
+  The easy case
+  -------------
+
+If you only have one BitBabbler device in your host machine, and it is only
+hosting one guest VM, and you want to use it in the guest and not the host,
+then things actually are pretty simple.
+
+Assuming your VM already has USB support enabled (which libvirt will do by
+default), you just need to add a configuration like this to your domain
+(inside the <devices> section):
+
+  <hostdev mode='subsystem' type='usb' managed='yes'>
+    <source startupPolicy='optional'>
+       <vendor id='0x0403'/>
+       <product id='0x7840'/>
+    </source>
+    <!-- Optionally, add it to a specific guest USB bus on a specific port
+    <address type='usb' bus='0' port='1'/>
+    -->
+  </hostdev>
+
+You can either edit the domain config directly to add it, in which case the
+device will be available the next time the VM is started, or you can add it
+to an already running VM by saving the above to a file (say bb.xml) and then
+running:
+
+  # virsh attach-device yourdomain ./bb.xml --live
+
+At which point the device will appear in the running VM as a normal hotplug
+event, the same way it appears on a running host when first plugged in.
+
+
+This simplicity ends somewhat abruptly though if you have more than one
+BitBabbler in the host machine, because they will all share the same vendor
+and product ID making the configuration above ambiguous ...
+
+
+
+  The realistic case
+  ------------------
+
+With hardware becoming ever more powerful, running a single guest VM on the
+host is more likely to be the exception than the rule.  The general case that
+we need to be able to support is a host running any number of guest VMs, with
+any number of BitBabbler devices available, with full control of how many (and
+which) of them are to be allocated to each guest, or to the host itself.
+
+Since each BitBabbler device has a unique serial number, this would still be
+simple if the configuration above was able to use that to distinguish them from
+each other, but neither QEMU nor libvirt supports using that information at the
+present time. The only way they give us to distinguish between multiple devices
+that have the same vendor and product ID is to look at where it is connected to
+the USB bus.
+
+The libvirt configuration allows us to replace the <vendor id> and <product id>
+with an address specification of the form:
+
+  <address type='usb' bus='3' device='6'/>
+
+We can get the required bus and device number from a device scan like this:
+
+  # seedd -sv
+  Have 3 devices:
+    Bus:Dev  VID:PID
+    003:006 0403:7840 Serial 'GK9VZF', ... port 3-2
+    005:002 0403:7840 Serial 'GDYXTH', ... port 5-4
+    005:007 0403:7840 Serial 'GTH4R8', ... port 5-2.3
+
+So the above <address> refers here to the device with serial number GK9VZF.
+
+The good news is, this can be used with the same, simple, managed configuration
+as above.  The bad news is, the 'device' number is not a constant, and it will
+change each time the device is unplugged and replugged, and there is a good
+probability that it will be different every time the host is rebooted, even if
+the devices remain plugged in exactly as they were before ...
+
+Which means this is fine if you want a quick way to add a specific device to a
+guest VM on the fly in an ad hoc manner - but it's not going to be a reliable
+way to set up a static configuration which should survive a host reboot.
+Right now, the only way to achieve that is to get our hands dirty at a lower
+level than the normal libvirt interface.
+
+QEMU offers us a somewhat more workable, but still less than ideal solution.
+It allows us to choose the device address by bus number and port, rather than
+device number.  Which means we can select the device by where it is physically
+plugged into the host machine.  That in turn brings its own potential for new
+problems, but if nobody moves the devices it will be stable through a reboot,
+and likewise through the device being removed and replaced into the same slot.
+Essentially we'll be assigning a physical port on the host to the guest, and
+whatever device is plugged into that slot, will then belong to the guest VM.
+
+In order to do this though, we need to step outside the managed niceties of
+libvirt, which means we need to handle a few more of the things that it does
+with our own alternative configuration.
+
+
+The first thing we need to do is ensure that the libvirt managed QEMU session
+will have permission to access the device.  The precise details of this will
+vary based on how libvirt is configured on your system but typically it will
+run QEMU as an unprivileged user on the host.  We need to give that user, or
+a group that user is in, permission to access the relevant USB device files.
+We can do that with udev, using a configuration something like the following,
+placed into a configuration file in /etc/udev/rules.d:
+
+  ACTION=="add", SUBSYSTEM=="usb", \
+   ATTR{idVendor}=="0403", ATTR{idProduct}=="7840", ATTR{serial}=="GK9VZF", \
+   GROUP="libvirt-qemu"
+
+Where the serial number and GROUP (or USER) will be set to suit your system.
+Multiple rules like this can be added for multiple devices, or wildcards used
+to match multiple devices in a single rule, but each device that is to be
+assigned to a guest VM must have its permission set this way.  Any BitBabbler
+device that will only be used by the host does not need to be (and probably
+should not be) included here.  This configuration will take effect the next
+time the device is plugged in, or when the machine is rebooted.
+
+
+The next thing we need to do is configure the libvirt domain to add the device
+by bus and port number.  To do this we need to directly supply options for the
+QEMU command line.  The important parts of that will look something like this:
+
+  <domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+    ...
+    <devices>
+      ...
+    </devices>
+    <qemu:commandline>
+      <qemu:arg value='-device'/>
+      <qemu:arg value='usb-host,hostbus=3,hostport=2'/>
+      <qemu:arg value='-device'/>
+      <qemu:arg value='usb-host,hostbus=5,hostport=4'/>
+      <qemu:arg value='-device'/>
+      <qemu:arg value='usb-host,hostbus=5,hostport=2.3'/>
+    </qemu:commandline>
+  </domain>
+
+Which would add all three devices reported by the scan above to this guest VM.
+The important things to note here are the 'xmlns:qemu' option, which must be
+included in the <domain> tag for the <qemu::commandline> section to be valid,
+and the hostbus/hostport values, which can be obtained for each device from
+the scan output (eg. 'port 5-2.3' equates to hostbus=5,hostport=2.3).
+
+With this configuration in place, the device should become available in the
+guest VM the next time it is restarted (note that it is not sufficient to just
+reboot the guest OS, the VM itself must actually be halted and restarted).  It
+is also possible to hotplug a device into a running VM using the QEMU monitor,
+but since the libvirt managed method works for that too, I won't detail that
+here.  If you've followed what all the above does, it shouldn't be hard to
+figure out if you really do ever need that.
+
+
+The final configuration change for the VM, which is not strictly required, but
+is highly recommended, is to ensure the device is attached to a USB2.0 port (or
+better) inside the guest.  The default libvirt configuration generally only
+creates a USB1.1 host controller, and if the BitBabbler device is attached to
+that then its throughput will be well below what it is really capable of.
+
+The easiest way to ensure that is to simply change the default USB <controller>
+to be an XHCI device, since it will automatically support both USB3.0 devices
+and all lower speed devices without the need to individually configure a full
+set of companion controllers for lower speed devices.  It's also supposed to be
+a more efficient driver.  It's a bit more bleeding edge than the others, and
+may have some issues to shake out, but so far we've not run into them, at least
+not with the BitBabbler devices.  To do that, you'll want to replace the USB
+<controller> section with something like:
+
+  <controller type='usb' index='0' model='nec-xhci'>
+    <address type='pci' domain='0x0000' bus='0x00' slot='0x05' function='0x0'/>
+  </controller>
+
+Where 'slot' is a free PCI slot not already in use by any other controller.
+
+
+Armed with these workarounds, that should be about all you need for just about
+any configuration.  There are some variations on the themes that are possible,
+and more options that can be specified to more precisely control how and where
+devices are connected inside the guest, but we'll defer to the QEMU and libvirt
+documentation for details of those.  Hopefully in the not too distant future,
+libvirt will grow some extra layers of user-friendly to make much of this be
+no longer necessary, but until then we need to play with the hand we're dealt.
+
+One last thing to note, which isn't directly related to the VM configuration,
+is that you must ensure nothing on the host claims any of the devices which are
+to be allocated to guest VMs before the guest itself has been able to claim it
+(after that, attempts to access it from the host should be refused since the
+device will already be claimed). Mostly this means that if you are also running
+seedd on the host, you need to explicitly specify which device(s) it should use
+with the --device-id option, otherwise it will automatically claim all of them,
+and it will probably do that before the guest VMs have had time to boot.
+
+
+  Dealing with cgroups
+  --------------------
+
+If using the <qemu:commandline> override on a system with cgroups active, then
+libvirt will not automatically add the USB device to the set of allowed devices
+like it would when using a <hostdev> section, and since the USB devices are not
+in the default set, they will need to be added explicitly.  To do this we again
+need a known and stable name for the device, but we can do that by creating a
+symlink with the udev rule like this:
+
+  ACTION=="add", SUBSYSTEM=="usb", \
+   ATTR{idVendor}=="0403", ATTR{idProduct}=="7840", ATTR{serial}=="GK9VZF", \
+   GROUP="libvirt-qemu", SYMLINK="bitbabbler/$attr{serial}"
+
+Which will ensure that /dev/bitbabbler/GK9VZF is a link to the real USB device
+node when it is plugged in.
+
+We can then have it added to the cgroup for the virtual machines by setting the
+following in /etc/libvirt/qemu.conf:
+
+  cgroup_device_acl = [
+    "/dev/null", "/dev/full", "/dev/zero",
+    "/dev/random", "/dev/urandom",
+    "/dev/ptmx", "/dev/kvm", "/dev/kqemu",
+    "/dev/rtc","/dev/hpet", "/dev/vfio/vfio",
+    "/dev/bitbabbler/GK9VZF"
+  ]
+
+You can add as many devices there as you require for use in virtual machines.
+

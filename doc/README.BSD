@@ -1,0 +1,56 @@
+
+On OpenBSD, FreeBSD, and MacOS, where clang is now the default compiler,
+the configure script for the bit-babbler source will prefer to use it
+(as opposed to the normal autoconf default of always preferring GCC).
+
+You can still explicitly select the compiler to use if you wish to, using
+the normal autoconf idiom, something like:
+
+ $ ./configure CC=gcc CXX=g++
+
+In either case, whichever toolchain you use, you will still need to build
+this with gmake, and you will need to have the bash package installed.
+
+
+That said, on OpenBSD, using the default GCC 4.2.1 version is not highly
+recommended.  It is too old to support using #pragma GCC diagnostic inside
+of functions, and though you could safely remove those statements, or move
+them outside the function definitions without changing the behaviour of the
+compiled code - with the extended diagnostic warnings that we build with by
+default, even the system headers for that toolchain have problems that the
+compiler will complain about.  Given the reasons for not updating that to a
+later version of GCC, and the change of focus to make clang now the default
+toolchain for OpenBSD, it seems wrong for us to try and hide those problems
+with it, and better to just let them be a clear warning against using that
+version of GCC on OpenBSD anymore.  All the attention of OpenBSD developers
+is on clang now, and so we should follow that there too.
+
+For FreeBSD, things were initially a little more ambiguous, it does provide
+more recent versions of GCC, and its clang toolchain does not support the
+abi::__forced_unwind exceptions which do proper stack unwinding for threads
+when they are cancelled, so for FreeBSD 10 we were still defaulting to and
+recommending people use GCC there - but in the FreeBSD 11 release the GCC
+toolchain there is also starting to show some signs of neglect.  There are
+problems with its optimiser miscompiling code, which the configure script
+has some workarounds for to selectively disable known-broken optimisations
+on FreeBSD, and the 'relro' hardening (which makes portions of the process
+memory space read-only after relocation) was also broken (which we don't
+automatically work around, so if you want to use an effected GCC version,
+and you'll know it's effected if the executables simply always segfault at
+startup, then you'll need to explicitly pass --disable-relro to configure.
+See https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=219035#c4 for more
+details on that).  So on balance, it seems the sane thing for FreeBSD now
+is also to recommend people prefer the clang toolchain, unless they have
+their own good reasons to choose otherwise.
+
+
+As of FreeBSD 11, hotplugging of USB devices is supported, but the OS
+level support for unplugging them isn't yet perfect.  If a device is
+removed while it is being actively accessed, then the thread which was
+performing that access may deadlock inside an OS function call and be
+leaked.  If that happens it won't otherwise interrupt normal operation
+of our code (and the device can be plugged back in again successfully),
+but it is something to be aware of if you do plan to remove and replace
+devices frequently without restarting the application process that is
+controlling them.
+

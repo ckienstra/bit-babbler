@@ -1,0 +1,15 @@
+bbctl_TYPE = EXECUTABLE
+bbctl_LANGUAGE = C++
+bbctl_OBJS = bbctl.o
+bbctl_VPATHS = %.cpp,$(srcdir)/src
+bbctl_INSTALLDIR = $(bindir)
+bbctl_CPPFLAGS = -I$(srcdir)/include
+
+# We need msvcr110 for _create_locale in json.h
+# And we need to explicitly list any system libs that would otherwise use
+# symbols from msvcrt, else we'll end up linked to two crt libraries which
+# isn't likely to end well.
+CRT110_LIBS = stdc++ winpthread mingwex mingw32 msvcr110
+
+bbctl_PE_LDFLAGS = -Wl,--stack,8388608
+bbctl_PE_LIBS = wsock32 ws2_32 $(CRT110_LIBS)

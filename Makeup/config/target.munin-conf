@@ -1,0 +1,4 @@
+munin-conf_TYPE = DATA
+munin-conf_DATA_SRCDIR = $(srcdir)/munin
+munin-conf_DATA_INSTALLDIR = /etc/munin/plugin-conf.d
+munin-conf_DATA_FILES = bit-babbler

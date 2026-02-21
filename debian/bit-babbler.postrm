@@ -1,0 +1,117 @@
+#! /bin/sh
+
+set -e
+
+# summary of how this script can be called:
+#        * <postrm> `remove'
+#        * <postrm> `purge'
+#        * <old-postrm> `upgrade' <new-version>
+#        * <new-postrm> `failed-upgrade' <old-version>
+#        * <new-postrm> `abort-install'
+#        * <new-postrm> `abort-install' <old-version>
+#        * <new-postrm> `abort-upgrade' <old-version>
+#        * <disappearer's-postrm> `disappear' <r>overwrit>r> <new-version>
+# for details, see http://www.debian.org/doc/debian-policy/ or
+# the debian-policy package
+
+
+revert_seedd_conf()
+{
+    local oldconf='/etc/default/seedd'
+
+    # Check that the old file hasn't already been removed, and that it hasn't
+    # been usurped by some other package (which is unlikely, but would be Bad
+    # for what we're going to do next).
+    [ -e "${oldconf}.dpkg-remove" ] || return 0
+    dpkg-query -L bit-babbler | grep -F -q -x "$oldconf" || return 0
+
+    # Put things back to how they started before the upgrade.
+    mv "${oldconf}.dpkg-remove" "$oldconf"
+}
+
+revert_sysctl_conf()
+{
+    local oldconf='/etc/sysctl.d/bit-babbler-sysctl.conf'
+
+    # Check that this package does still own the old file
+    dpkg-query -L bit-babbler | grep -F -q -x "$oldconf" || return 0
+
+    # Put things back to how they started before the upgrade.
+    # At most, only one of these should normally exist.
+    for f in "${oldconf}.dpkg-remove" "${oldconf}.dpkg-backup"; do
+	if [ -e "$f" ]; then
+	    echo "Restoring $oldconf from $f"
+	    mv "$f" "$oldconf"
+	fi
+    done
+}
+
+purge_etc()
+{
+    # Remove any local admin additions which in the past would have been
+    # conffiles that dpkg would have removed on purge.
+    rm -f '/etc/sysctl.d/bit-babbler-sysctl.conf'	\
+	  '/etc/systemd/system/seedd.service'		\
+	  '/etc/systemd/system/seedd-wait.service'	\
+	  '/etc/udev/rules.d/60-bit-babbler.rules'
+
+    # Remove any .wants, .requires, .service.d etc. directories for seedd itself.
+    rm -rf /etc/systemd/system/seedd.service.*		\
+	   /etc/systemd/system/seedd-wait.service.*
+
+    # Remove references to seedd in other service .wants or .requires directories.
+    find /etc/systemd -name 'seedd.service' -o -name 'seedd-wait.service' -delete
+
+    if [ -d /run/systemd/system ] ; then
+	systemctl --system daemon-reload >/dev/null || true
+    fi
+}
+
+case "$1" in
+    abort-install|abort-upgrade)
+	# Version 0.8 adds /etc/bit-babbler/seedd.conf, replacing the previous
+	# daemon configuration options which were set in /etc/default/seedd.
+	dpkg --compare-versions -- "$2" ge-nl '0.8~' || revert_seedd_conf
+
+	# Version 0.9 moves /etc/sysctl.d/bit-babbler-sysctl.conf to the
+	# /usr/lib/sysctl.d directory, but we need to preserve the one in
+	# /etc exactly as it is, as an override, if it was modified.
+	dpkg --compare-versions -- "$2" ge-nl '0.9~' || revert_sysctl_conf
+    ;;
+
+    remove|purge|upgrade|failed-upgrade|disappear)
+    ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+if [ "$1" = "purge" ]; then
+    # Remove any cruft that might be left behind if someone purges this
+    # in the middle of a 'failed' conversion.
+    rm -f '/etc/sysctl.d/bit-babbler-sysctl.conf.dpkg-backup'	\
+	  '/etc/sysctl.d/bit-babbler-sysctl.conf.dpkg-remove'
+
+    # This is a bit controversial, on the one hand it would remove files which
+    # ostensibly aren't owned by the package.  But on the other, they are files
+    # which historically would have been conffiles that were, and which would
+    # have been cleaned up if the package was fully purged.  The new fad to put
+    # configuration into $libdir and generate unmanaged content in /etc breaks
+    # all that and potentially leaves a mess there for admin to tidy up, which
+    # they can't just do by purging the package anymore.
+    #
+    # For now, we won't do it, we'll just document what should be done if we do
+    # and let's see if some other solution for this problem emerges, or if the
+    # tide of consensus clearly shifts one way or the other about how to manage
+    # this regression from the historical best practices developed by Debian.
+    #
+    # purge_etc
+fi
+
+exit 0
+
+# vi:sts=4:sw=4:noet

@@ -1,0 +1,814 @@
+dnl Makeup configure boilerplate.
+dnl
+dnl Copyright 2003 - 2021, Ron <ron@debian.org>
+dnl
+dnl This file is distributed under the terms of the GNU GPL version 2.
+dnl
+dnl As a special exception to the GPL, it may be distributed without
+dnl modification as a part of a program using a makeup generated build
+dnl system, under the same distribution terms as the program itself.
+
+# Check standard args.
+
+AC_ARG_ENABLE([pipe],
+              [AS_HELP_STRING([--enable-pipe],
+                              [use pipes instead of temporary files for]dnl
+                              [ faster compilation (default yes)])],
+              [mu_cv_enable_pipe=$enableval],
+              [mu_cv_enable_pipe=yes])
+
+AC_ARG_ENABLE([optimisation],
+              [AS_HELP_STRING([--enable-optimisation],
+                              [use compiler optimisation flags (default yes)])],
+              [mu_cv_enable_optimisation=$enableval],
+              [mu_cv_enable_optimisation=yes])
+
+AC_ARG_ENABLE([debug],
+              [AS_HELP_STRING([--enable-debug],
+                              [enable extra debug code (default yes)])],
+              [mu_cv_enable_debug=$enableval],
+              [mu_cv_enable_debug=yes])
+
+AC_ARG_ENABLE([profile],
+              [AS_HELP_STRING([--enable-profile],
+                              [use profiling flags (default no)])],
+              [mu_cv_enable_profiling=$enableval],
+              [mu_cv_enable_profiling=no])
+
+AC_ARG_ENABLE([extra_warnings],
+              [AS_HELP_STRING([--enable-extra_warnings],
+                              [use extra compiler warnings (default yes)])],
+              [mu_cv_enable_extra_warnings=$enableval],
+              [mu_cv_enable_extra_warnings=yes])
+
+AC_ARG_ENABLE([werror],
+              [AS_HELP_STRING([--enable-werror],
+                              [fail on compile warnings, (default yes for]dnl
+                              [ release builds, no for debug builds)])],
+	      [
+		mu_cv_enable_fail_on_warning=$enableval],
+	      [
+		AS_IF([test "$mu_cv_enable_debug" = yes],[
+		    mu_cv_enable_fail_on_warning=no
+		],[
+		    dnl mu_cv_enable_fail_on_warning=yes
+		    dnl Basic tests like for iconv crap out right now
+		    dnl with warnings as errors.  Disable temporarily.
+		    mu_cv_enable_fail_on_warning=no
+		])
+	      ])
+
+AC_ARG_ENABLE([valgrind_friendly],
+              [AS_HELP_STRING([--enable-valgrind_friendly],
+                              [do extra cleanup to be valgrind clean (default no)])],
+              [mu_cv_enable_valgrind_friendly=$enableval],
+              [mu_cv_enable_valgrind_friendly=no])
+
+AC_ARG_ENABLE([bison_deprecated_warnings],
+              [AS_HELP_STRING([--enable-bison_deprecated_warnings],
+                              [let bison3 bark about deprecated bison2 constructs]dnl
+                              [ (default no)])],
+              [mu_cv_enable_bison_deprecated_warnings=$enableval],
+              [mu_cv_enable_bison_deprecated_warnings=no])
+
+AC_ARG_ENABLE([code_suggestions],
+              [AS_HELP_STRING([--enable-code_suggestions],
+                              [let the compiler suggest optimisation and safety]dnl
+                              [ changes (default yes)])],
+              [mu_cv_enable_code_suggestions=$enableval],
+              [mu_cv_enable_code_suggestions=yes])
+
+AC_ARG_ENABLE([clang_almost_everything],
+              [AS_HELP_STRING([--enable-clang_almost_everything@<:@=version@:>@],
+                              [build with most of clang's -Weverything warnings,]dnl
+                              [ optionally specifying the clang version to use]dnl
+                              [ (default no)])],
+              [mu_cv_enable_clang_almost_everything=$enableval],
+              [mu_cv_enable_clang_almost_everything=no])
+
+AS_IF([test "$mu_cv_enable_clang_almost_everything" = yes],
+      [mu_cv_prog_cc=${mu_cv_prog_cc:-clang}
+       mu_cv_prog_cxx=${mu_cv_prog_cxx:-clang++}],
+
+      [test "$mu_cv_enable_clang_almost_everything" != no],
+      [mu_cv_prog_cc=${mu_cv_prog_cc:-clang-$mu_cv_enable_clang_almost_everything}
+       mu_cv_prog_cxx=${mu_cv_prog_cxx:-clang++-$mu_cv_enable_clang_almost_everything}]
+     )
+
+
+dnl With _FORTIFY_SOURCE=2, it is possible that some conforming programs may fail,
+dnl but we'll default to the strongest tests and let the individual projects back
+dnl off from that if needed.  It requires optimisation to be enabled, and glibc
+dnl since version 2.16 will warn if it is used with -O0, so we don't enable it by
+dnl default if --disable-optimisation was used.  The Debian glibc patches out that
+dnl warning and just silently disables it if not building with optimisation, but
+dnl we still don't want to have other distro users nagged by that.
+AC_ARG_ENABLE([fortify_source],
+              [AS_HELP_STRING([--enable-fortify_source@<:@=N@:>@],
+                              [compile with -D_FORTIFY_SOURCE=N (default 2]dnl
+                              [ if optimisation is enabled)])],
+              [AS_IF([test "$enableval" = yes],
+                     [mu_cv_enable_fortify_source=2],
+                     [mu_cv_enable_fortify_source=$enableval])
+              ],
+              [AS_IF([test "$mu_cv_enable_optimisation" = no],
+                     [mu_cv_enable_fortify_source=no],
+                     [mu_cv_enable_fortify_source=2])
+              ])
+
+AC_ARG_ENABLE([stack_protector],
+              [AS_HELP_STRING([--enable-stack_protector@<:@=option@:>@],
+                              [build with stack protection guards (default strong),]dnl
+                              [ may be set to 'strong', 'all', 'explicit', or a]dnl
+                              [ numeric value for the ssp-buffer-size parameter])],
+              [AS_IF([test "$enableval" = yes],
+                     [mu_cv_enable_stack_protector=strong],
+                     [mu_cv_enable_stack_protector=$enableval])
+              ],
+              [mu_cv_enable_stack_protector=strong])
+
+AC_ARG_ENABLE([relro],
+              [AS_HELP_STRING([--enable-relro],
+                              [make process memory read-only after relocation]dnl
+                              [ where possible (default yes)])],
+              [mu_cv_enable_relro=$enableval],
+              [mu_cv_enable_relro=yes])
+
+dnl This is usually only a benefit when combined with relro, so link their defaults.
+AC_ARG_ENABLE([bind_now],
+              [AS_HELP_STRING([--enable-bind_now],
+                              [resolve all symbols at process startup so that]dnl
+                              [ they can be included in relro (default yes if]dnl
+                              [ relro is enabled)])],
+              [mu_cv_enable_bind_now=$enableval],
+              [mu_cv_enable_bind_now=$mu_cv_enable_relro])
+
+dnl Default -fsanitize= options to use with --enable-san.
+dnl The float-divide-by-zero and float-cast-overflow options are enabled by
+dnl -fsanitize=undefined with Clang, but GCC does not enable those by default.
+dnl It should be harmless to enable them explicitly on Clang though.
+m4_pushdef([mu_default_san_options],
+           [[address,undefined,float-divide-by-zero,float-cast-overflow,integer,nullability]])dnl
+dnl
+m4_pushdef([mu_default_tsan_options],[[thread,undefined,integer,nullability]])dnl
+dnl
+AC_ARG_ENABLE([san],
+              [AS_HELP_STRING([--enable-san@<:@=sanitizer,...@:>@],
+                              [build with runtime sanitiser support (default no), ]dnl
+                              [pass a comma-separated list of sanitizers, else ]dnl
+                              ["]mu_default_san_options[" will be used])],
+              [AS_IF([test "$enableval" = yes],
+                     [mu_cv_enable_san="mu_default_san_options"],
+                     [mu_cv_enable_san=$enableval])
+              ],
+              [mu_cv_enable_san=no])
+
+dnl TSan can't be enabled together with ASan, so give it its own shortcut option.
+AC_ARG_ENABLE([tsan],
+              [AS_HELP_STRING([--enable-tsan],
+                              [shortcut option for ]dnl
+                              [--enable-san=]mu_default_tsan_options)],
+              [AS_IF([test "$enableval" = yes],
+                     [mu_cv_enable_san="mu_default_tsan_options"],
+                     [mu_cv_enable_san=$enableval])
+              ])
+dnl
+dnl We don't need these anymore, so don't pollute the global namespace with them.
+m4_popdef([mu_default_tsan_options],[mu_default_san_options])dnl
+
+dnl ASan at least is not currently compatible with the _FORTIFY_SOURCE checks,
+dnl so disable that when the sanitisers are going to be used.
+AS_IF([test "$mu_cv_enable_san" != no],[mu_cv_enable_fortify_source=no])
+
+
+AC_ARG_ENABLE([shared],
+              [AS_HELP_STRING([--enable-shared],
+                              [use dynamic linking (default yes)])],
+              [mu_cv_enable_shared=$enableval],
+              [mu_cv_enable_shared=yes])
+
+AC_ARG_ENABLE([static],
+              [AS_HELP_STRING([--enable-static],
+                              [use static linking (default no)])],
+              [
+                AS_IF([test "$enableval" = yes],[mu_cv_enable_shared=no])
+              ])
+
+
+dnl These are separately precious because overriding {C,CXX}FLAGS should not
+dnl normally mask the C/C++ standard that a project is built with, and that
+dnl might not be an immediately obvious consequence of setting them explictly.
+dnl If you really want to override that, do it with these (or by changing the
+dnl PACKAGE_{C,XX}STD set for the project), which likewise will also preserve
+dnl whatever other compiler flags would normally be used.
+AC_ARG_VAR([C_STANDARD], [flags to set the compiler C standard to use])
+AC_ARG_VAR([CXX_STANDARD], [flags to set the compiler C++ standard to use])
+
+dnl Not all platforms have GCC as their default compiler anymore, even if it is
+dnl still available by default.  Autoconf still prefers to use GCC by default
+dnl in the AC_PROG_{CC,CXX} tests though.  These variables let the search order
+dnl be explicitly specified by the user, and let us automatically tweak it for
+dnl different platforms.
+AC_ARG_VAR([CC_SEARCH], [space-separated list of which C compiler to prefer])
+AC_ARG_VAR([CXX_SEARCH], [space-separated list of which C++ compiler to prefer])
+
+AC_ARG_VAR([RC_SEP], [a hack for excluding windows resource files])
+AC_ARG_VAR([ARFLAGS], [options passed to ar])
+AC_ARG_VAR([YACCFLAGS], [options passed to bison/yacc])
+AC_ARG_VAR([LEXFLAGS], [options passed to flex/lex])
+
+AC_ARG_VAR([PICFLAGS], [extra flags for building dynamically linked object files])
+AC_ARG_VAR([HOST_PICFLAGS], [the PICFLAGS needed for the intended host system])
+
+AC_ARG_VAR([PTHREAD_CPPFLAGS], [C/C++ preprocessor flags for thread-safe builds])
+AC_ARG_VAR([PTHREAD_LDFLAGS], [C/C++ linker flags for thread-safe builds])
+
+dnl the EXTRAFOO variables allow appending additional flags without completely
+dnl overriding the normal default set (and/or having to specify them manually
+dnl just to add some additional option.
+AC_ARG_VAR([EXTRACPPFLAGS], [extra C preprocessor flags])
+AC_ARG_VAR([EXTRACFLAGS], [extra C compiler flags])
+AC_ARG_VAR([EXTRACXXFLAGS], [extra C++ compiler flags])
+AC_ARG_VAR([EXTRALDFLAGS], [extra linker flags])
+AC_ARG_VAR([EXTRAYACCFLAGS], [extra options passed to bison/yacc])
+AC_ARG_VAR([EXTRALEXFLAGS], [extra options passed to flex/lex])
+AC_ARG_VAR([EXTRALIBS], [extra libraries (to link before LIBS)])
+
+AC_ARG_VAR([MAKEUP_HOST_ARCH], [architecture that targets should be built for])
+AC_ARG_VAR([MAKEUP_DEFAULT_LINKAGE], [default linkage for binary targets])
+AC_ARG_VAR([DSOEXT], [filename extension for dynamic libraries])
+
+dnl On Linux, FHS 3.0 introduced /run to replace the /var/run directory,
+dnl FreeBSD and OpenBSD use a similar spec that is documented in hier(7),
+dnl but they still use /var/run at present.
+AC_ARG_VAR([SYSTEM_RUNDIR], [System directory for run-time variable data])
+
+dnl Fully expanded paths for the standard installation directories.
+dnl Normally you should try to avoid using these, and instead use the standard
+dnl variables for them directly - but there are a few cases, such as paths in
+dnl configuration files, or in compiled or generated source files, where the
+dnl normal secondary expansions that some of these contain will not, or cannot
+dnl occur, and so the fully expanded path, using the value of $exec_prefix and
+dnl $prefix at configure time must be used instead.
+ACM_EXPAND_DIR([EXP_PREFIX],[$prefix])
+ACM_EXPAND_DIR([EXP_EXEC_PREFIX],[$exec_prefix])
+ACM_EXPAND_DIR([EXP_BINDIR],[$bindir])
+ACM_EXPAND_DIR([EXP_SBINDIR],[$sbindir])
+ACM_EXPAND_DIR([EXP_INCLUDEDIR],[$includedir])
+ACM_EXPAND_DIR([EXP_LIBDIR],[$libdir])
+ACM_EXPAND_DIR([EXP_DATADIR],[$datadir])
+ACM_EXPAND_DIR([EXP_DOCDIR],[$docdir])
+ACM_EXPAND_DIR([EXP_MANDIR],[$mandir])
+ACM_EXPAND_DIR([EXP_LOCALEDIR],[$localedir])
+
+
+# Oddly enough, the most preferred compiler is a platform specific thing, not a
+# universal truth.  Who could have guessed ...
+
+dnl Keeping this list current with the changing Winds of Whim could become a
+dnl rather tedious and fragile thing, so it's tempting to default to checking
+dnl for cc and c++ first everywhere, on the assumption that all modern systems
+dnl now have that as an alias to their actually preferred toolchains, but that
+dnl has the downside of making it less obvious exactly which compiler is being
+dnl used, and making it even more fragile if some user has changed it from what
+dnl the normal platform default would otherwise be ...  So let's see how this
+dnl goes for a while.  At present the platform needing this most is OpenBSD,
+dnl since it still ships an ancient "last of the GPLv2" gcc in its base set,
+dnl but actually has clang as its default and preferred compiler.
+case $host in
+    *-*-openbsd* | *-*-freebsd* | *-*-darwin* )
+	dnl OpenBSD (as of 6.2) still has GCC 4.2.1 installed in its base set,
+	dnl but "defaults" to clang (which is what /usr/bin/cc points to), so
+	dnl test for a working clang before gcc there.
+	dnl
+	dnl FreeBSD 11 considers clang to be its default compiler, and though
+	dnl it ships with gcc 5-7, there seem to be an ever increasing number
+	dnl of ways in which the GCC toolchain there is broken.  We already
+	dnl had workarounds for broken optimisation there (see the platform
+	dnl specific toolchain tests below), and now we find that the version
+	dnl of binutils it is using is known to be broken with --enable-relro
+	dnl too (https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=219035#c4)
+	dnl so stop swimming against the tide there and default it to clang.
+	dnl
+	dnl Likewise for MacOS, it being both a fork of FreeBSD and having a
+	dnl near existential dread of the letters GPL.
+
+	AS_IF([test -z "$CC_SEARCH"],[CC_SEARCH="clang gcc cc"])
+	AS_IF([test -z "$CXX_SEARCH"],[CXX_SEARCH="clang++ g++ c++"])
+	;;
+
+    * )
+	dnl By default, do what autoconf would otherwise do and prefer GCC,
+	dnl except our second choice is clang (which it entirely ignores),
+	dnl and we don't bother looking for the obscure C++ compilers which
+	dnl it would check for if it doesn't find g++ or c++.  When someone
+	dnl proves they want them, and that they can compile our code, then
+	dnl we can revise this list to add them.
+	dnl
+	dnl Ideally, we'd have defaulted to calling AC_PROG_{CC,CXX} with an
+	dnl empty argument, and just let it do its own default thing, but that
+	dnl macro is too broken to enable that, it checks if the argument is
+	dnl empty during the m4 pass, so it considers an empty variable to be
+	dnl an explicit list (and then fails at runtime with no compilers to
+	dnl check) - and we can't AS_IF it and call it either with or without
+	dnl arguments at runtime, because there are tests in there which will
+	dnl only expand once, and so everything falls apart when they are only
+	dnl expanded in the dead branch ...  The assumption that it will only
+	dnl ever appear once in one code path goes deep there.
+
+	AS_IF([test -z "$CC_SEARCH"],[CC_SEARCH="gcc clang cc"])
+	AS_IF([test -z "$CXX_SEARCH"],[CXX_SEARCH="g++ clang++ c++"])
+	;;
+esac
+
+
+SYSTEM_RUNDIR="/var/run"
+RC_SEP="#"
+
+case $host in
+
+    *-*-linux* )
+
+        dnl Used in the make subsystem for rule selection.
+        MAKEUP_HOST_ARCH="ELF"
+
+        dnl Used to define the link names to the config header.
+        makeup_build_platform="linux"
+
+        DSOEXT=".so"
+
+        dnl Don't do this by default anymore.  It went out of vogue with gcc3.
+        dnl CPPFLAGS="$CPPFLAGS -DUSE_GCC_PRAGMA"
+
+        HOST_PICFLAGS="-fPIC"
+
+        SYSTEM_RUNDIR="/run"
+        ;;
+
+    *-*-*bsd* | *-*-darwin* )
+
+        MAKEUP_HOST_ARCH="ELF"
+        makeup_build_platform="bsd"
+
+        DSOEXT=".so"
+
+        HOST_PICFLAGS="-fPIC"
+        ;;
+
+    *-*-cygwin* | *-*-mingw32* )
+
+        MAKEUP_HOST_ARCH="PE"
+        makeup_build_platform="msw"
+
+        DSOEXT=".dll"
+
+        HOST_PICFLAGS="-D_DLL=1 -D_WINDLL=1"
+
+        AC_ARG_VAR([WINRCFLAGS], [options passed to windres])
+        WINRCFLAGS="--include-dir /usr/$host_alias/include"
+
+        AS_IF([test -n "$mu_cv_with_wx_build_dir"],[
+            WINRCFLAGS="$WINRCFLAGS --include-dir $mu_cv_with_wx_build_dir/../include"
+        ])
+
+        WINRCFLAGS="$WINRCFLAGS --define __WIN32__ --define __WIN95__ --define __GNUWIN32__"
+
+        RC_SEP=
+        ;;
+    * )
+        AC_MSG_ERROR([Unknown host type.  Stopping.])
+        ;;
+esac
+
+dnl This one may be added to later by user config that adds flavours.
+dnl At this level there are only two flavours, 'd' - debug, and 'r' - release.
+AS_IF([test "$mu_cv_enable_debug" = yes],[makeup_build_flavour=d],[makeup_build_flavour=r])
+
+AS_IF([test "$mu_cv_enable_shared" = yes],[
+    MAKEUP_DEFAULT_LINKAGE="shared"
+    PICFLAGS="\$(HOST_PICFLAGS)"
+],[
+    MAKEUP_DEFAULT_LINKAGE="static"
+])
+
+
+
+# Check standard tools.
+
+dnl We might be overriding these based on an option request or test.
+dnl But we'll still want to check that they actually work.
+CC=${CC:-$mu_cv_prog_cc}
+CXX=${CXX:-$mu_cv_prog_cxx}
+
+
+dnl If the user explicitly set C/CXXFLAGS, and we have an explicitly specified
+dnl language standard to use, then prepend that to the *FLAGS but otherwise we
+dnl respect the user's selection of FLAGS and don't modify them here.  If they
+dnl are not set yet, then we set them here to stop AC_PROG_* from adding its
+dnl own default options to them and flag that we'll be adding our own lot once
+dnl we've done the basic checks for a working toolchain.
+AS_IF([test "${CFLAGS+set}" = set],[
+    AS_IF([test -n "$C_STANDARD"],[CFLAGS="$C_STANDARD${CFLAGS:+ $CFLAGS}"])
+],[
+    CFLAGS=$C_STANDARD
+    mu_use_our_cflags=yes
+])
+
+AS_IF([test "${CXXFLAGS+set}" = set],[
+    AS_IF([test -n "$CXX_STANDARD"],[CXXFLAGS="$CXX_STANDARD${CXXFLAGS:+ $CXXFLAGS}"])
+],[
+    CXXFLAGS=$CXX_STANDARD
+    mu_use_our_cxxflags=yes
+])
+
+AC_MSG_NOTICE([Using ${C_STANDARD:-toolchain default} C standard])
+AC_MSG_NOTICE([Using ${CXX_STANDARD:-toolchain default} C++ standard])
+
+
+AC_PROG_CC([$CC_SEARCH])
+AC_PROG_CPP
+AC_PROG_CXX([$CXX_SEARCH])
+AC_PROG_CXXCPP
+
+dnl If we explicitly set the C/C++ standard to use, then ensure that is passed
+dnl when the preprocessor is run during the tests that follow.  This is a bit
+dnl sketchy, because really this ought to be done as part of testing for how to
+dnl run the preprocessor above - and there are no separate variables for the
+dnl preprocessor flags for C and C++, the autoconf tests just use CPPFLAGS for
+dnl both, which is a bit difficult when we want to specify a C or C++ standard
+dnl to use in mixed code.  If we don't do this though, then we can see dodgy or
+dnl misleading test results for things like AC_CHECK_HEADERS which runs both
+dnl the compiler and preprocessor as separate tests.  If CFLAGS or CXXFLAGS set
+dnl a standard to use and the preprocessor flags do not, then the results could
+dnl be conflicting when things which do vary according to the standard that is
+dnl being used are involved.  Fortunately, CPP and CXXCPP generally aren't used
+dnl very often outside of the feature tests here, and if there is a problem it
+dnl will probably shake out fairly early in the first test which does use it.
+AS_IF([test -n "$C_STANDARD"],[CPP="$CPP $C_STANDARD"])
+AS_IF([test -n "$CXX_STANDARD"],[CXXCPP="$CXXCPP $CXX_STANDARD"])
+
+AC_PROG_LEX
+dnl AC_PROG_YACC
+dnl Do this instead, we want real bison usually and not the crippled yaccalike.
+AC_CHECK_TOOL([YACC],[bison],[:])
+
+AC_PROG_RANLIB
+AC_CHECK_TOOL([AR],[ar],[:])
+AC_CHECK_TOOL([WINDRES],[windres],[:])
+
+AC_PROG_LN_S
+AC_PROG_INSTALL
+
+AC_CHECK_PROGS([LCOV],[lcov],[:])
+AC_CHECK_PROGS([GENHTML],[genhtml],[:])
+
+
+# Configure toolchain options.
+
+dnl These we always apply, even when the user explicitly set *FLAGS manually.
+AS_IF([test "$mu_cv_enable_pipe" = yes],
+      [ACM_ADD_OPT([CFLAGS,CXXFLAGS],[-pipe])])
+
+dnl And this one is a little special, because we have to pass it to the linker
+dnl as well, but we don't have separate linker flags for C and C++ which means
+dnl we'll always need to enable it for both together while that stays true.
+AS_IF([test "$mu_cv_enable_profiling" = yes],
+      [ACM_ADD_OPT([CFLAGS,CXXFLAGS,LDFLAGS],[-pg])])
+
+
+dnl Build the lists of common, C, and C++ compiler flags which we only use if
+dnl CFlAGS and CXXFLAGS were not explicitly overridden by the user.  We don't
+dnl need to test for these, they should be supported by all toolchains we use.
+dnl It's the common options we are most interested in here, so that we do not
+dnl need to duplicate them and the enable logic for both CFLAGS and CXXFLAGS.
+mu_common_flags=
+mu_cflags=
+mu_cxxflags=
+
+AS_IF([test "$mu_cv_enable_optimisation" = yes],
+      [ACM_ADD_OPT([mu_common_flags],[-O2])])
+
+AS_IF([test "$mu_cv_enable_debug" = yes],
+      [ACM_ADD_OPT([mu_common_flags],[-g])])
+
+AS_IF([test "$mu_cv_enable_fail_on_warning" = yes],
+      [ACM_ADD_OPT([mu_common_flags],[-Werror])])
+
+dnl Always use -Wall unless *FLAGS is explicitly overridden.
+ACM_ADD_OPT([mu_common_flags],[-Wall])
+
+dnl These are enabled by default unless --disable-extra_warnings was used.
+AS_IF([test "$mu_cv_enable_extra_warnings" = yes],[
+    ACM_ADD_OPT([mu_common_flags],[-Wextra,
+                                   -Wpointer-arith,
+                                   -Wcast-qual,
+                                   -Wcast-align,
+                                   -Wformat=2,
+                                   -Wfloat-equal])
+    ACM_ADD_OPT([mu_cflags],[-Wstrict-prototypes,
+                             -Wmissing-prototypes])
+    ACM_ADD_OPT([mu_cxxflags],[-Woverloaded-virtual])
+])
+
+dnl Set CFLAGS using the options from above, if the user didn't override it.
+AS_IF([test "$mu_use_our_cflags" = yes],[
+    ACM_ADD_OPT([CFLAGS],[$mu_common_flags,$mu_cflags])
+])
+
+dnl Set CXXFLAGS using the options from above, if the user didn't override it.
+AS_IF([test "$mu_use_our_cxxflags" = yes],[
+    ACM_ADD_OPT([CXXFLAGS],[$mu_common_flags,$mu_cxxflags])
+])
+
+dnl Nothing should need these after this, so let's get them out of the global
+dnl namespace again so as to be perfectly clear about that in the future.
+m4_foreach([var],[mu_common_flags,mu_cflags,mu_cxxflags],[
+    AS_UNSET([var])dnl
+])
+
+
+dnl This option is disabled by default and if enabled sets clang as the default
+dnl CC and CXX, so we still add these to *FLAGS even if the user supplied their
+dnl own preferred set. If they don't want these, they can just not enable them.
+AS_IF([test "$mu_cv_enable_clang_almost_everything" != no],[
+    dnl Options common to both clang and clang++ for C and C++.
+    ACM_ADD_OPT([CFLAGS,CXXFLAGS],[-Weverything,
+                                   -Wno-c99-extensions,
+                                   -Wno-vla-extension,
+                                   -Wno-vla,
+                                   -Wno-gnu-zero-variadic-macro-arguments,
+                                   -Wno-variadic-macros,
+                                   -Wno-disabled-macro-expansion,
+                                   -Wno-undef,
+                                   -Wno-padded,
+                                   -Wno-packed,
+                                   -Wno-documentation-html,
+                                   -Wno-documentation-unknown-command])dnl
+
+    dnl (There are currently no) Extra C specific options.
+    dnl ACM_ADD_OPT([CFLAGS],[])
+
+    dnl Extra C++ specific options.
+    ACM_ADD_OPT([CXXFLAGS],[-Wno-c++11-long-long,
+                            -Wno-exit-time-destructors,
+                            -Wno-global-constructors,
+                            -Wno-weak-vtables,
+                            -Wno-weak-template-vtables,
+                            -Wno-shadow])dnl
+
+    dnl The above assumes a baseline of clang 3.5.0 as the minimum supported
+    dnl version.  We test for the options which were added in later versions.
+    ACM_ADD_COMPILER_WARNING([C,CXX],[no-reserved-id-macro,
+                                      no-format-pedantic,
+                                      no-double-promotion])dnl
+    ACM_ADD_COMPILER_WARNING([CXX],[no-shadow-field-in-constructor])dnl
+
+    dnl The "override" keyword was added in C++11, so don't whine about it
+    dnl not being used if we are building to an earlier standards version.
+    dnl Clang itself should know this, but as of clang 11.0.1 appears not to.
+    AS_CASE([$CXX_STANDARD],
+            [*++98|*++03],
+            [ACM_ADD_COMPILER_WARNING([CXX],[no-suggest-destructor-override,
+                                             no-suggest-override])]dnl
+           )dnl
+])
+
+
+dnl This option enables toolchain diagnostics which suggest ways that the code
+dnl can be changed or annotated to enable optimisations or safety checks that
+dnl are probably applicable, but which the compiler cannot determine with 100%
+dnl certainty that all the required conditions will always be met.
+dnl
+dnl We need to test if these extra warning options are actually supported by
+dnl the toolchain in use, we can't safely assume that they are with this lot.
+dnl The -Wsuggest-attribute options are currently GCC specific.
+AS_IF([test "$mu_cv_enable_code_suggestions" = yes],[
+    ACM_ADD_COMPILER_WARNING([C,CXX],[suggest-attribute=format,
+                                      suggest-attribute=const,
+                                      suggest-attribute=pure,
+                                      suggest-attribute=noreturn,
+                                      suggest-attribute=malloc,
+                                      suggest-attribute=cold])
+])
+
+
+dnl We need a custom template for this one.  The alternative is running the
+dnl compiler/pre-processor to test for it, but that seems like overkill here.
+AH_VERBATIM([_FORTIFY_SOURCE],
+[/* Build with libc buffer overflow checks enabled.
+   We need to guard this, because on some platforms the toolchain will already
+   define it as a builtin, and then emit warnings if we redefine it.  Ideally,
+   we'd undefine it here and then force our choice of strictness, but we can't
+   do that with autoheader because it sees that as a hook to rewrite.  So just
+   let people (yes, we're looking at you Gentoo) reap what they've sown if the
+   toolchain or the environment they use has already defined it. */
+#ifndef _FORTIFY_SOURCE
+# undef _FORTIFY_SOURCE
+#endif])
+
+AS_IF([test "$mu_cv_enable_fortify_source" != no],[
+    AC_DEFINE_UNQUOTED([_FORTIFY_SOURCE],[$mu_cv_enable_fortify_source])
+])
+
+dnl We use the case here as a portable test for if this was set to a numeric
+dnl value, for use with the older stack protector options, or a string value
+dnl to use one of the newer ones.  It's split between two separate case tests
+dnl so we can fall back to the older method if the toolchain doesn not support
+dnl the newer options.  We may want to special-case that further for some
+dnl options like 'explicit' which aren't exactly a superset of that, but for
+dnl now this gives us reasonable fallback behaviour for a default of 'strong'.
+dnl
+dnl We need to include the -fstack-protector option in both compiler and linker
+dnl flags so that libssp will be linked in correctly on platforms where it is
+dnl needed because the functions it provides are not integrated with libc.
+AS_CASE([$mu_cv_enable_stack_protector],
+        [no],dnl Option is disabled
+        [],
+        [[''|*[!0-9]*]],dnl Value is not numeric
+        [ACM_ADD_COMPILE_LINK_OPTION([C,CXX],[-fstack-protector-$mu_cv_enable_stack_protector])
+         AS_VAR_PUSHDEF([spvar],[mu_cv_ldflag_-fstack-protector-$mu_cv_enable_stack_protector])
+         AS_VAR_IF([spvar],[yes],[],[mu_cv_enable_stack_protector=4])
+         AS_VAR_POPDEF([spvar])
+        ]
+)
+
+AS_CASE([$mu_cv_enable_stack_protector],
+        [[''|*[!0-9]*]],dnl Value is not numeric
+        [],
+        [*],dnl Value is numeric
+        [ACM_ADD_COMPILE_LINK_OPTION([C,CXX],
+                [-fstack-protector --param ssp-buffer-size=$mu_cv_enable_stack_protector])
+        ]
+)
+
+
+dnl Testing for these is a bit awkward, because unknown ld -z keywords will be
+dnl "ignored for Solaris compatibility", but we do still need to test for them
+dnl because the mingw linker at least does not support the -z option ...
+AS_IF([test "$mu_cv_enable_relro" = yes],[
+    ACM_ADD_LINKER_OPTION([[-Wl,-z,relro]])
+])
+
+AS_IF([test "$mu_cv_enable_bind_now" = yes],[
+    ACM_ADD_LINKER_OPTION([[-Wl,-z,now]])
+])
+
+
+dnl Add the needed toolchain options for any requested runtime sanitisers.
+AS_IF([test "$mu_cv_enable_san" != no],[ACM_ADD_SANITIZER([$mu_cv_enable_san])])
+
+
+dnl Add any platform specific toolchain flags that are generally needed.
+case $host in
+    *-*-freebsd* )
+	AC_LANG_PUSH([C++])
+
+	dnl On FreeBSD 11, both gcc6 and gcc7 will miscompile code when the
+	dnl -fguess-branch-probability optimisation is enabled (which it is
+	dnl with anything above -O0).  We don't currently have a trivial test
+	dnl case for that which we can use here, but the symptom is having an
+	dnl exception which should normally be safely caught, instead invoke
+	dnl terminate and kill the application.  It would appear that the
+	dnl stack context for unwinding is being lost in some code paths by
+	dnl this optimisation, since an exception thrown in one path will be
+	dnl fine, but one right next to it in another will explode.
+	dnl
+	dnl So until we have some proof of it being fixed, disable that when
+	dnl using g++.  We can't actually directly test if we are using g++,
+	dnl because clang lies and defines all of gcc's macros, so instead
+	dnl we can only test if we are not using clang (which would choke on
+	dnl this test anyway, since it doesn't currently support that flag
+	dnl in any case.
+
+	ACM_PUSH_VAL([$0],[CXXFLAGS],[-fno-guess-branch-probability])dnl
+	AC_CACHE_CHECK([if $CXX needs -fno-guess-branch-probability],
+		       [mu_cv_flag_guess_branch_probability],
+		       [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]],
+							   [[ #ifdef __clang__
+								using the clang compiler
+							      #endif
+							   ]]
+							  )],
+					  [mu_cv_flag_guess_branch_probability=yes],
+					  [mu_cv_flag_guess_branch_probability=no]
+					 )
+		      ])
+
+	AS_IF([test "$mu_cv_flag_guess_branch_probability" = yes],
+	      [],
+	      [ACM_POP_VAR([$0],[CXXFLAGS])])dnl
+
+	dnl And as above -freorder-blocks can cause the same symptom to manifest
+	dnl on FreeBSD 11 with both gcc6 and gcc7, just in different places in
+	dnl the code.
+
+	ACM_PUSH_VAL([$0],[CXXFLAGS],[-fno-reorder-blocks])dnl
+	AC_CACHE_CHECK([if $CXX needs -fno-reorder-blocks],
+		       [mu_cv_flag_reorder_blocks],
+		       [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]],
+							   [[ #ifdef __clang__
+								using the clang compiler
+							      #endif
+							   ]]
+							  )],
+					  [mu_cv_flag_reorder_blocks=yes],
+					  [mu_cv_flag_reorder_blocks=no]
+					 )
+		      ])
+
+	AS_IF([test "$mu_cv_flag_reorder_blocks" = yes],[],[ACM_POP_VAR([$0],[CXXFLAGS])])dnl
+
+	dnl And yet one more, that does it in yet another place.
+	dnl If these continue to shake out, it might be safer to just build
+	dnl with -O0 on FreeBSD 11 with gcc ...
+
+	ACM_PUSH_VAL([$0],[CXXFLAGS],[-fno-tree-dominator-opts])dnl
+	AC_CACHE_CHECK([if $CXX needs -fno-tree-dominator-opts],
+		       [mu_cv_flag_tree_dominator_opts],
+		       [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]],
+							   [[ #ifdef __clang__
+								using the clang compiler
+							      #endif
+							   ]]
+							  )],
+					  [mu_cv_flag_tree_dominator_opts=yes],
+					  [mu_cv_flag_tree_dominator_opts=no]
+					 )
+		      ])
+
+	AS_IF([test "$mu_cv_flag_tree_dominator_opts" = yes],
+	      [],
+	      [ACM_POP_VAR([$0],[CXXFLAGS])])dnl
+
+	AC_LANG_POP([C++])
+	;;
+esac
+
+
+PTHREAD_CPPFLAGS="-pthread"
+PTHREAD_LDFLAGS="-pthread"
+
+ACM_PUSH_VAL([$0],[CPPFLAGS],[$PTHREAD_CPPFLAGS])dnl
+
+AC_CACHE_CHECK([if _REENTRANT is defined by the compiler], [mu_cv_have_reentrant],
+  [AC_PREPROC_IFELSE([AC_LANG_PROGRAM([[
+#ifndef _REENTRANT
+#error "_REENTRANT was not defined"
+#endif
+				      ]])
+    ],
+    [mu_cv_have_reentrant=yes],
+    [mu_cv_have_reentrant=no]
+  )]
+)
+
+ACM_POP_VAR([$0],[CPPFLAGS])dnl
+
+AS_IF([test "$mu_cv_have_reentrant" != yes],[
+    ACM_ADD_OPT([PTHREAD_CPPFLAGS],[-D_REENTRANT])
+])
+
+
+dnl add 's' here and omit ranlib from the build step
+ARFLAGS=rDvs
+
+dnl bison3 complains loudly about a bunch of constructs that must still be used
+dnl if compatibility with bison2 is required, and appears to give us no clean
+dnl way to deal with that at all.  We can tell bison3 not to bark by passing it
+dnl the -Wno-deprecated option, except bison2 chokes and dies on that too ...
+dnl Disabling those warnings is sub-optimal, but so is scaring end-users with
+dnl them and/or maintaining two sets of grammar files, or autogenerating them
+dnl just for a couple of gratuitously renamed defines. So the least ugly option
+dnl we have appears to be to test for bison3 here and disable those warnings if
+dnl it's the version in use, unless they were enabled explicitly by the user
+dnl who ran configure.  At least for the next few years while most of the world
+dnl is still using bison2 ...
+AS_IF([test "$mu_cv_enable_bison_deprecated_warnings" = no],[
+    AS_IF([test "$YACC" != ":"],[
+        AS_IF([$YACC -Wno-deprecated -V > /dev/null 2>&1],[
+            mu_yacc_flags=" -Wno-deprecated"
+            AC_MSG_NOTICE([disabled bison3 deprecation warnings])
+        ])
+    ])
+])
+
+YACCFLAGS="-d$mu_yacc_flags \$(EXTRAYACCFLAGS)"
+LEXFLAGS="\$(EXTRALEXFLAGS)"
+
+dnl This one's work here is done now too, we don't need it elsewhere.
+AS_UNSET([mu_yacc_flags])
+
+
+dnl Macros to define in the private config header.
+
+AC_DEFINE_UNQUOTED([EMDEBUG],
+                   [$(test "$mu_cv_enable_debug" != yes)$?],
+                   [build with additional debugging code])
+
+AC_DEFINE_UNQUOTED([EM_USE_VALGRIND_FRIENDLY],
+                   [$(test "$mu_cv_enable_valgrind_friendly" != yes)$?],
+                   [do extra cleanup to be valgrind clean])
+
+AC_DEFINE_UNQUOTED([EM_SYSTEM_RUNDIR],["$SYSTEM_RUNDIR"],
+                   [System directory for run-time variable data])
+

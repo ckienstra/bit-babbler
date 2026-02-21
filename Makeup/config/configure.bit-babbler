@@ -1,0 +1,253 @@
+dnl Makeup extra configuration for bit-babbler.
+dnl
+dnl Copyright 2003 - 2021, Ron Lee.
+dnl
+AC_LANG_PUSH([C++])
+
+case $host in
+    *-*-linux* )
+    ;;
+
+    *-*-cygwin* | *-*-mingw32* )
+	dnl We don't have unix domain sockets on windows, so default to TCP there.
+	AS_IF([test -z "$SEEDD_CONTROL_SOCKET"],
+	      [SEEDD_CONTROL_SOCKET=tcp:localhost:56789])
+
+	dnl We need at least 0x0600 to get AI_ADDRCONFIG for getaddrinfo
+	bb_cv_env_winver=0x0600
+	bb_cv_env__win32_winnt=0x0600
+	AC_DEFINE_UNQUOTED([WINVER], [$bb_cv_env_winver],
+			   [Select the MSW version to be compatible with])
+	AC_DEFINE_UNQUOTED([_WIN32_WINNT], [$bb_cv_env__win32_winnt],
+			   [The MSW NT version to be compatible with])
+
+	AC_MSG_NOTICE([using WINVER = '$bb_cv_env_winver', _WIN32_WINNT = '$bb_cv_env__win32_winnt'])
+
+	dnl Testing for vasprintf has the opposite problem to what localtime_r does
+	dnl as described below.  It's included in the system library, so a link test
+	dnl passes with a faked prototype, but an actual build fails because it is
+	dnl not visible in stdio.h unless _GNU_SOURCE is defined.
+	AC_DEFINE([_GNU_SOURCE],[1],[Include support for vasprintf et al.])
+    ;;
+
+    *-*-openbsd* )
+	dnl The default pthread stack size on OpenBSD 6.1 is 512kB, so fix that.
+	AS_IF([test -z "$THREAD_STACK_SIZE"],[THREAD_STACK_SIZE=8192])
+
+	AC_DEFINE([HAVE_BROKEN_STDIO_LOCKING],[1],
+                  [Workaround OpenBSD _thread_flockfile cancellation bug])
+    ;;
+
+    *-*-freebsd* )
+	dnl The default pthread stack size on FreeBSD 11 is 2MB, so fix that.
+	dnl So far we haven't actually had this smash the stack there with
+	dnl the default size (unlike OpenBSD, MacOS and Windows), but let's
+	dnl not wait until we do, just use the same size as everywhere else.
+	AS_IF([test -z "$THREAD_STACK_SIZE"],[THREAD_STACK_SIZE=8192])
+    ;;
+
+    *-*-darwin* )
+	dnl The default pthread stack size on MacOS is only 512kB, and we expect to
+	dnl need more than that, so bring it into line with the normal Linux default.
+	AS_IF([test -z "$THREAD_STACK_SIZE"],[THREAD_STACK_SIZE=8192])
+    ;;
+esac
+
+
+dnl /var could be a remote mount which isn't available at early boot when seedd
+dnl is first started, but /run is supposed to be ready before any ordinary early
+dnl boot process, even if it is a separate mount like a tmpfs, so default to it
+dnl unless we know it's not expected to be supported.  FHS 3.0 allows /var/run
+dnl to be an alias to /run, and that is what most (but not all) Linux distros
+dnl currently do.  The BSDs (aside from Debian's kFreeBSD port) aren't riding
+dnl this train yet though, so we still use /var/run there instead of rudely
+dnl creating a new directory in the root of people's systems.  Aside from the
+dnl override for Windows above, we use SYSTEM_RUNDIR from configure.stdtools to
+dnl decide which to use here.
+AS_IF([test -z "$SEEDD_CONTROL_SOCKET"],
+      [SEEDD_CONTROL_SOCKET="$SYSTEM_RUNDIR/bit-babbler/seedd.socket"])
+
+AC_ARG_VAR([SEEDD_CONTROL_SOCKET], [Set the default to use for the seedd control socket])
+AS_IF([test -n "$SEEDD_CONTROL_SOCKET"],[
+      AC_DEFINE_UNQUOTED([SEEDD_CONTROL_SOCKET],["$SEEDD_CONTROL_SOCKET"],
+                         [Set the default to use for the seedd control socket])
+    ])
+
+
+AC_ARG_VAR([THREAD_STACK_SIZE], [Explicitly set the per-thread stack size in kB (if non-zero)])
+AS_IF([test -n "$THREAD_STACK_SIZE"],[
+      AC_DEFINE_UNQUOTED([THREAD_STACK_SIZE],[$THREAD_STACK_SIZE],
+                         [Explicitly set the per-thread stack size in kB (if non-zero)])
+    ])
+
+
+AC_C_BIGENDIAN
+
+AC_CHECK_FUNCS([vasprintf])
+
+dnl See if clock_gettime is available even without librt.  On some systems
+dnl it is, and as of glibc 2.17 the clock_* functions moved from librt to
+dnl the main C library as well.  We don't particularly want to depend upon
+dnl librt, for lots of reasons, but using this if we do have it is sane.
+dnl
+dnl Testing for localtime_r and gmtime_r in this way fails on mingw-w64 4.9.2
+dnl even though it does actually have them when either of _POSIX_C_SOURCE or
+dnl _POSIX_THREAD_SAFE_FUNCTIONS are defined - because AC_CHECK_FUNCS tries to
+dnl link a faked prototype, but in the mingw time.h they are inline functions
+dnl only, wrapping the system localtime_s function. We could do a more complex
+dnl test here, but it's probably ok to just let them fall back to using the
+dnl non-reentrant versions, because on MSW, localtime and gmtime are in theory
+dnl implemented using thread-local storage, so they are thread-safe anyway.
+AC_CHECK_FUNCS([gettimeofday localtime_r gmtime_r timegm clock_gettime])
+
+
+dnl Check if SIGRTMIN is available.  MacOS 10.12.1 still doesn't have it
+dnl (though FreeBSD added support for it in version 7).
+AC_CHECK_DECLS([SIGRTMIN],[],[],[[#include <signal.h>]])
+
+dnl OpenBSD as of at least 6.1 doesn't provide this (though FreeBSD and MacOS
+dnl at least do) and it isn't required by POSIX.1-2008 (SuSv4 TC2 2016).
+AC_CHECK_DECLS([LOG_MAKEPRI],[],[],[[#include <syslog.h>]])
+
+
+ACM_CXX_FORCED_UNWIND
+ACM_FUNC_PTHREAD_SETNAME
+ACM_TR1_UNORDERED_MAP
+
+ACM_CPP_PUSH_POP_DIAGNOSTIC_MACROS
+
+ACM_DEFINE_FUNCTION_ATTRIBUTE([noreturn],[BB_NORETURN])
+ACM_DEFINE_FUNCTION_ATTRIBUTE([const],   [BB_CONST])
+ACM_DEFINE_FUNCTION_ATTRIBUTE([pure],    [BB_PURE])
+ACM_DEFINE_FUNCTION_ATTRIBUTE([cold],    [BB_COLD])
+
+ACM_DEFINE_FUNCTION_ATTRIBUTE([no_sanitize("float-divide-by-zero")],
+			      [BB_NO_SANITIZE_FLOAT_DIVIDE_BY_ZERO])
+ACM_DEFINE_FUNCTION_ATTRIBUTE([no_sanitize("unsigned-integer-overflow")],
+			      [BB_NO_SANITIZE_UNSIGNED_INTEGER_OVERFLOW])
+
+ACM_DEFINE_PRINTF_FORMAT_ATTRIBUTE([BB_PRINTF_FORMAT])
+ACM_DEFINE_STRFTIME_FORMAT_ATTRIBUTE([BB_STRFTIME_FORMAT])
+
+ACM_DEFINE_STATEMENT_ATTRIBUTE([fallthrough],[BB_FALLTHROUGH],[],[],[do {} while(0)])
+
+
+dnl The FreeBSD libusb3 provides compatibility for libusb-0.1, libusb-1.0 and
+dnl their own libusb2 interface, with libusb.so as the -dev link to it.
+dnl On Linux libusb.so usually points to libusb-0.1, which we don't want.
+dnl The header file is usually in $prefix/include/libusb-1.0 on linux, and in
+dnl the system include dir on FreeBSD.
+AC_ARG_VAR([LIBUSB_DIR], [Path for libusb (mostly for cross-compiling)])
+AC_ARG_VAR([USB_CPPFLAGS], [Extra CPPFLAGS for libusb (mostly for cross-compiling)])
+AC_ARG_VAR([USB_LDFLAGS], [Extra LDFLAGS for libusb (mostly for cross-compiling)])
+
+AS_IF([test -n "$LIBUSB_DIR"],[
+    USB_CPPFLAGS="-I$LIBUSB_DIR/include $USB_CPPFLAGS"
+    USB_LDFLAGS="-L$LIBUSB_DIR/lib $USB_LDFLAGS"
+])
+
+
+ACM_PUSH_VAL([$0],[CPPFLAGS],[$USB_CPPFLAGS])dnl
+
+AC_CHECK_HEADERS([libusb-1.0/libusb.h libusb.h],[break])
+
+AS_IF([test "$ac_cv_header_libusb_1_0_libusb_h" = "yes"],[
+	libusb_header="<libusb-1.0/libusb.h>"
+      ],[test "$ac_cv_header_libusb_h" = "yes"],[
+	libusb_header="<libusb.h>"
+])
+
+AS_IF([test -n "$libusb_header"],[
+    AC_DEFINE_UNQUOTED([LIBUSB_HEADER],[$libusb_header],[libusb header location])
+])
+
+ACM_POP_VAR([$0],[CPPFLAGS])dnl
+
+
+ACM_PUSH_VAL([$0],[LDFLAGS],[$USB_LDFLAGS])dnl
+ACM_PUSH_VAR([$0],[LIBS])dnl
+
+AC_SEARCH_LIBS([libusb_init], [usb-1.0 usb],
+	       [
+		  AC_DEFINE([HAVE_LIBUSB],[1],[libusb is available])
+		  AS_CASE([$ac_cv_search_libusb_init],
+			  [-l*],[[USB_LIBS=${ac_cv_search_libusb_init#-l}]])
+
+		  dnl We need the double quoting in the case above or the # in
+		  dnl the prefix removal breaks the macro expansion horribly.
+	       ],[
+		  AC_MSG_WARN([libusb not found])
+		  case $host in
+		    *-*-openbsd* )
+			ACM_ADD_MISSING_DEP([libusb1-1.0])
+		    ;;
+
+		    *-*-kfreebsd* )
+			ACM_ADD_MISSING_DEP([libusb2-dev])
+		    ;;
+
+		    * )
+			ACM_ADD_MISSING_DEP([libusb-1.0-0-dev])
+		    ;;
+		  esac
+	       ])
+
+dnl We need to test for these explicitly, because LIBUSB_API_VERSION won't do.
+dnl It wasn't bumped when libusb_strerror was added, and it just doesn't exist
+dnl at all in the FreeBSD libusb3, which does provide libusb_get_port_numbers
+dnl even though it currently just returns LIBUSB_ERROR_NOT_SUPPORTED ...
+dnl And that kids, is why we have autoconf.
+dnl As of FreeBSD 11, we also need to test for libusb_has_capability, since it
+dnl appears they added the hotplug support API and bumped the compatibility
+dnl version, but didn't actually add the capability test function ...
+AC_CHECK_FUNCS([libusb_strerror libusb_get_port_numbers libusb_has_capability])
+
+ACM_POP_VAR([$0],[LIBS,LDFLAGS])dnl
+
+AC_SUBST([USB_LIBS])
+
+AC_LANG_POP([C++])
+
+
+ACM_CHECKPOINT_MISSING_DEPS
+
+dnl We defer failing out on this until here, because the most likely reason is
+dnl just that libusb itself is missing, which will be reported above, and that
+dnl is a more useful explaination to give if so.  This should only trigger if
+dnl the lib is installed but the header is in some wacky place we didn't look.
+AS_IF([test -z "$libusb_header"],[
+    AC_MSG_ERROR([No libusb header file found])
+])
+
+
+dnl We need this one in the udev rules to work around more systemd dumb-fuckery
+dnl that its cult members refuse to recognise the reality of yet.  It seems a
+dnl dangerous value to hard-code, but libvirt essentially hard-codes it too ...
+dnl Hopefully the real problem will be addressed in a release or two's time and
+dnl then we can get rid of this workaround again.
+AC_ARG_VAR([LIBVIRT_SOCKET], [Path to the libvirtd unix control socket])
+LIBVIRT_SOCKET="$SYSTEM_RUNDIR/libvirt/libvirt-sock"
+
+
+AC_MSG_NOTICE([Configured bit-babbler $PACKAGE_VERSION])
+AC_MSG_NOTICE([  with udev:            $mu_cv_with_udev])
+AC_MSG_NOTICE([  SEEDD_CONTROL_SOCKET: $SEEDD_CONTROL_SOCKET])
+AC_MSG_NOTICE([  LIBVIRT_SOCKET:       $LIBVIRT_SOCKET])
+AS_IF([test -n "$THREAD_STACK_SIZE"],[
+AC_MSG_NOTICE([  THREAD_STACK_SIZE:    $THREAD_STACK_SIZE])
+])
+
+
+case $host in
+    *-*-openbsd* )
+	AC_MSG_NOTICE([NOTE: On OpenBSD you will need to build this by using gmake,])
+	AC_MSG_NOTICE([      and you will need to have the bash package installed.])
+    ;;
+
+    *-*-freebsd* )
+	AC_MSG_NOTICE([NOTE: On FreeBSD you will need to build this by using gmake,])
+	AC_MSG_NOTICE([      and you will need to have the bash package installed.])
+    ;;
+esac
+
+AC_CONFIG_FILES([munin/bit_babbler],[chmod +x munin/bit_babbler])

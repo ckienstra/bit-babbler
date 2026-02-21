@@ -1,0 +1,57 @@
+# Munin-node configuration for BitBabbler
+#
+# The init script in the Debian package defaults to using --socket-group=adm
+# which means this does not need to run as root.  If you prefer to use an
+# alternative group for that permission, you should use the same group here
+# as well.  If you disable group access to the control socket, this will need
+# to run as 'user root'.
+#
+# The following extra options are configurable:
+#
+# env.control_socket  - The filesystem path to the control socket to query.
+#                       You shouldn't normally need to set this, unless you
+#                       have multiple processes controlling the available
+#                       BitBabbler devices and want to monitor them all.
+#
+# env.persist_devices - If set to 'yes', then all devices which have been
+#                       present for at least one run of the script on this
+#                       node will continue to be reported as present, even if
+#                       they have been disabled or removed.  This ensures that
+#                       all historical logs for them will continue to be made
+#                       available, and that alerts will be reported for them
+#                       if they are unexpectedly removed.  If not set, or set
+#                       to any other value, the history will not be lost, but
+#                       the graphs for them may cease to be displayed, and
+#                       alerts will not be triggered for them.
+#
+#                       The list of actively persisted devices is recorded in
+#                       the plugin state files for bit_babbler-* which can be
+#                       found in /var/lib/munin-node/plugin-state/ (or where
+#                       your system was configured to put those). You can edit
+#                       that file if you do wish to permanently remove devices
+#                       from it.
+#
+# env.always_include  - This may be set to a space separated list of device IDs
+#                       (as reported by 'bbctl -s') that you always want to be
+#                       graphed.  Its operation is similar to persist_devices,
+#                       except the list of devices is specified explicitly here
+#                       rather than detected automatically.
+#
+#                       Any devices which are present, but which are not listed
+#                       here, will still be graphed while they are present, and
+#                       will still be automatically included in the persistent
+#                       list if persist_devices is enabled.  Unless they are
+#                       explicitly listed in always_ignore.
+#
+# env.always_ignore  -  This may be set to a space separated list of device IDs
+#                       as above, except devices in this list will never be
+#                       reported to the munin master, and will be removed from
+#                       the persistent list if they were previously in it.  If
+#                       a device is listed both here and in always_include, it
+#                       will be included, but don't do that, you'll just drive
+#                       yourself or someone else mad with dissonant confusion.
+
+[bit_babbler]
+group adm
+env.persist_devices yes
+

@@ -1,0 +1,25 @@
+munin-script_TYPE = DATA
+munin-script_DATA_SRCDIR = $(top_builddir)/munin
+munin-script_DATA_INSTALLDIR = $(datadir)/munin/plugins
+munin-script_DATA_FILES = bit_babbler
+
+INSTALL_DATA = $(INSTALL_PROGRAM)
+
+# Regenerate the plugin script if config.status or its source file changed.
+$(top_builddir)/munin/bit_babbler: $(srcdir)/munin/bit_babbler.in $(top_builddir)/config.status
+	@echo -n "  * Updating $@... "
+	@cd $(top_builddir) && ./config.status $@
+
+# This one is a little unconventional.  We don't usually remove files created
+# by config.status in the normal clean target, but this one actually is a build
+# target, not a part of the build system, and if we don't remove it here, then
+# nothing else would either, aside from completely removing a build subdir that
+# it was generated in.  So nothing would clean it if it's configured in-tree.
+do_clean_munin-script:
+	@echo "    Removing: munin/bit_babbler"
+	@$(RM) "$(top_builddir)/munin/bit_babbler"
+	@rmdir $(top_builddir)/munin 2>/dev/null || true
+
+clean_munin-script: do_clean_munin-script
+
+.PHONY: do_clean_munin-script

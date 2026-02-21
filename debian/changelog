@@ -1,0 +1,438 @@
+bit-babbler (0.9) unstable; urgency=medium
+
+  * Refactor the udev rules for kernel 4.12 bind events and the mess udev made
+    with handling introduction of a new event type.
+
+  * Install udev rules and systemd units with make install, and fix the paths
+    in them at configure time.  There should be no reason for that needing to
+    be Debian specific anymore.
+
+  * Ignore -Wgnu-designator at the sites where we use them rather than just
+    disabling it globally.  It's good to mark Special Things as being special.
+
+  * Drop the open coded set of 'hardening flags' from the Debian packaging,
+    we test for and include those as part of the normal build system options.
+
+  * Mark up exceptions for UBSan's not-actually-undefined tests so that we can
+    apply them to catch any code where that behaviour might be unintentional.
+    We do have deliberate use for Inf and NaN results in some statistics, and
+    for 'implicit' modulo 2^32 in a uint32_t.  This makes those more explicit.
+
+  * Be explicit about more traditionally implicit type conversions too so we
+    can usefully employ warnings about unintended/unanalysed conversions that
+    could be narrowing or reduce precision.
+
+  * Use RefuseManualStart/RefuseManualStop in seedd-wait.service.  It is a(n
+    optional) sequence point for seeding the kernel at boot time, so there is
+    no reason or value in attempting to start or stop it after that. Stopping
+    it could even be actively harmful, as that would also stop any unit that
+    did Require it to complete before they started, even though what they
+    actually Require (a freshly seeded kernel) has been satisfied and will
+    not be changed.
+
+  * Build-Depends: debhelper (>= 9), debhelper (>= 9.20160709) | dh-systemd
+    We need this little abomination because dh-systemd has been merged with
+    debhelper 9.20160709, but Jessie is still ELTS promised until 30/6/2022,
+    and it only has debhelper 9.20150101+deb8u2 ...  So when move-fast-and-
+    break-shit dropped dh-systemd from buster, it broke shit for people who
+    want packages to build on at least all supported releases without silly
+    avoidable busywork ...  Closes: #958581
+
+  * Enable bbvirt to log to syslog, which is useful to see what happens when
+    it's called from udev rules and the like which don't already log output
+    sent to stderr.
+
+  * Try to work around systemd deadlocking the boot with libvirt from Bullseye
+    when it starts a zombie .socket unit before the service unit dependencies
+    are satisfied - causing anything which attempts to communicate with it to
+    just hang until the systemd time out "boot ordering bug solver" kicks in.
+    We can only make the race a bit harder to lose here, a real fix involves
+    declaring proper ordering dependencies for the libvirt socket unit (and
+    fixing the networking.service unit to not abandon trying to bring the
+    network up if the ifupdown-pre.service times out).
+
+  * Chop the NUL terminator off control socket messages before passing them to
+    JSON::XS for decoding, the 4.0 release now considers them trailing garbage
+    rather than just ignoring them like earlier releases did.
+
+ -- Ron Lee <ron@debian.org>  Wed, 27 Oct 2021 17:19:23 +1030
+
+bit-babbler (0.8) unstable; urgency=medium
+
+  * Support hotplugging devices into libvirt guest domains which have names
+    containing characters that are not valid as part of a shell variable name.
+    Another reminder that the important part of keeping things as simple as
+    possible is always the "as possible" bit.
+
+  * Support reading seedd(1) options from a configuration file.  The original
+    design plan explicitly avoided this, partly just to keep the code as
+    simple and easy to audit as possible, and partly because it was desirable
+    to make invocation as simple and foolproof as possible.  The more options
+    that something has, the easier it is to make some mistake with running it
+    which could have subtle and even serious consequences.  But we are at the
+    point now where there are enough real alternative options which are either
+    genuinely desirable or needed for some use case, that the balance becomes
+    weighted toward being able to keep persistent configuration settings in a
+    file rather than having to spell them out on the command line each time.
+
+    The final straw for making this change now was the inability of systemd to
+    sanely support the existing simplified configuration interface that was
+    provided in /etc/default/seedd for the SysV init script.  When given the
+    alternative choices available to us of either adding a shell wrapper to
+    do what systemd could not, or forcing people to manually edit or override
+    the systemd unit directly to make any configuration change, this was
+    clearly the Lesser Evil to embrace if we were going to provide a native
+    systemd unit for the system daemon.  The former gains us nothing over the
+    existing LSB init script, and the latter would require every user to first
+    have a solid grasp of all the non-obvious consequences which can come into
+    play when configuring a system which (according to systemd.directives(7))
+    "contains 2464 entries in 13 sections, referring to 241 individual manual
+    pages" - and where even package maintainers and systemd upstream still
+    make mistakes that can take a long time for the real consequences to be
+    noticed.  So if we were to provide a systemd unit, it needs to be well
+    tested and give people few, if any, reasons to ever need to modify it.
+
+  * Preserve existing configuration on package upgrades.  The new default
+    configuration file behaves the same way as the old defaults did.  If the
+    settings in /etc/default/seedd have been customised, then on upgrade we
+    generate a custom /etc/bit-babbler/seedd.conf implementing the same set
+    of options.  The old customised file content will be retained, and can
+    be found in /etc/default/seedd.dpkg-old, in case there was anything else
+    in it which people might also want to keep, but after checking for that
+    it can safely be removed by the system admin.  Nothing from this package
+    uses files in /etc/default from this version onward.
+
+  * Two systemd unit files are now included in this package, but only one is
+    enabled by default.
+
+    The seedd.service unit provides the same functionality as the SysV init
+    script does, and will be used instead of it on systems where systemd is
+    running as the init process.  It will start the seedd(1) daemon as soon
+    as possible during boot, reading its options from the new configuration
+    file, and if feeding entropy to the kernel it will begin doing so as soon
+    as the available USB devices are announced to the system by udev.
+
+    The seedd-wait.service oneshot unit is not enabled by default. It provides
+    a simple sequence point which may be used to ensure that QA checked seed
+    entropy from available BitBabbler devices can be mixed into the kernel's
+    pool before other ordinary services which might rely upon it are started.
+    This is its default behaviour if it is simply enabled, and ordinarily it
+    will not delay the boot for very long, only until udev announces a device
+    that we can read some good seed bits from.  By default this will time out
+    after 30 seconds if good entropy cannot be obtained, which should be more
+    than enough time to get a good seed if that was going to be possible, but
+    won't completely cripple the system when it is acceptable for it to still
+    be running without having a working BitBabbler attached.
+
+    Additionally, the seedd-wait.service can also be used to place a harder
+    constraint on individual services, if there are particular things which
+    the local admin does not want started at all if good seed entropy was not
+    obtained.  Or it can be configured to divert the boot to a degraded mode
+    (such as the single-user mode emergency.target) if the availability of
+    good entropy from a BitBabbler should be a hard requirement for the whole
+    system.  For more details of its use see the BOOT SEQUENCING section of
+    the seedd(1) manual page.
+
+ -- Ron Lee <ron@debian.org>  Thu, 08 Feb 2018 10:26:52 +1030
+
+bit-babbler (0.7) unstable; urgency=medium
+
+  * Handle the oddball case of a RHEL/CentOS 6 kernel being used with libusb
+    version 1.0.13 or later.  They backported the USBDEVFS_GET_CAPABILITIES
+    API, but not the patch which was applied to the mainline kernel at the
+    same time to add USBDEVFS_CAP_BULK_SCATTER_GATHER.  With the default
+    libusb 1.0.9 that it normally ships with this doesn't matter because none
+    of it is supported there anyway, but updating it makes this become a real
+    problem that we need to deal with.
+
+  * Test for SIGRTMIN, MacOSX doesn't have it.
+
+  * Test for pthread_setname_np by signature, it's implemented differently on
+    different platforms.  Also support pthread_set_name_np which is what is
+    used by OpenBSD and FreeBSD.
+
+  * Explicitly set the pthread stack size on (more) platforms where it is tiny
+    by default.  We do create some large structures on the stack, and it's
+    probably better to have a consistent size on all platforms than have some
+    of them smash it "unexpectedly".
+
+  * Querying the string length with strftime is a GNU extension, so only use
+    that where it's actually available.
+
+  * Provide an implementation of FeedKernelEntropy for MacOS.  It does have a
+    documented interface for that, even if the implementation of it that is in
+    its kernel source as of Sierra is ...  let's go with enlightening.
+
+  * Rename _P(), our convenience alias to ngettext, to P_().  On OpenBSD 6.1
+    _P is defined in ctype.h, and regardless of what you might think of that,
+    symbols starting with an underscore are reserved.  So they win this one.
+
+  * Test for LOG_MAKEPRI, it isn't required by POSIX, and OpenBSD 6.1 doesn't
+    provide it.
+
+  * Add explicit tests for strtod_l and newlocale.  The newlocale function is
+    specified by POSIX, but OpenBSD doesn't provide it.  We can get away with
+    falling back to strtod there because it only has very limited support for
+    locales anyway, and right now it will always be either C or en_US.UTF8,
+    both of which use '.' as the decimal point.
+
+  * Support systems without abi::__forced_unwind for thread cancellation stack
+    unwinding and clean up.  The GCC toolchain on OpenBSD doesn't support it,
+    and neither does clang on FreeBSD or MacOS.
+
+  * Disable thread cancellation around calls to vfprintf on OpenBSD.  On that
+    platform it is a cancellation point (as expected), but if cancellation
+    does occur there on 6.1, it can leave its internal _thread_flockfile mutex
+    locked which means any future calls to vfprintf (or anything else needing
+    that lock) will deadlock.  We can't easily test for that bug, so we just
+    always provide our own safe cancellation point instead on that platform.
+
+  * Support unordered_map in both std and std::tr1 namespaces.  Normally it
+    isn't available in std:: unless C++11 support is enabled, but clang on
+    FreeBSD provides the tr1 header as a symlink to the std one, and only
+    provides the template in the std namespace.
+
+  * Test for libusb_has_capability.  FreeBSD 11 bumped LIBUSB_API_VERSION to
+    0x01000102, but didn't add the libusb_has_capability() function which was
+    part of that interface version.  It did however add the hotplug API, and
+    it does mostly work, so if the API version is sufficient, but we can't
+    test for this capability, then we'll assume it's available and that it
+    will handle a call to it gracefully if for some reason it really isn't.
+
+  * Deal with FreeBSD 11 libusb start up and shut down delays.  In our testing
+    there was a delay of around 4 seconds before it would report any existing
+    devices when LIBUSB_HOTPLUG_ENUMERATE was used with the hotplug callback
+    (and a similar delay when new devices really were hotplugged later).  That
+    makes things awkward for the --scan option, which would see no devices at
+    all before returning its results, unless it too had an arbitrary (and user
+    unfriendly long) delay before responding.  So we explicitly enumerate the
+    initial set ourselves on FreeBSD now even when hotplug support is enabled,
+    and handle any duplicates when the hotplug events finally do arrive.
+
+    Likewise, when libusb_exit is called, it also blocks for around 4 seconds
+    before returning - which delays our code from being able to do a clean
+    exit quickly.  There's not much we can do about that one except add some
+    extra debug logging when verbosity is turned up, so that users can see it
+    is not actually our code that has them twiddling their thumbs waiting.
+    Hopefully later releases of FreeBSD will improve on this.
+
+  * Work around FreeBSD 11 deadlocking on device unplug.  If a device is ever
+    removed while we are in the middle of a call to libusb_bulk_transfer(),
+    then that call may deadlock and never return, and the thread which called
+    it will not be able to be cancelled.  We can limit the impact that has on
+    our code (since we will already always be cancelling that thread once we
+    get the hotplug notification of the removal) by using pthread_timedjoin_np
+    and if the join times out, bark about it and just ignore the zombie thread
+    that we've been left with.  It's not ideal, and if it happens often enough
+    in a single process run, then leaked resources will start to be exhausted.
+    But most people don't replug things all that frequently, this won't happen
+    every time they do, and it is about the best we can do until the FreeBSD
+    bug is fixed.  There's no downside to the workaround if the bug doesn't
+    actually occur when a device is unplugged.
+
+  * Disable some buggy optimisations (normally enabled by -O2) when using GCC
+    on FreeBSD 11.  On that platform (we've not seen this anywhere else), they
+    appear to miscompile some code in a way that stack unwinding details are
+    lost and a thrown exception will invoke terminate rather than being caught
+    by the handler it should have unwound to.  Some of these were in obscure
+    corners of the code that are only seen when unlikely errors occur, so it's
+    not impossible that there may be a few more lurking.  But for now, we'll
+    just disable the known problem ones rather than falling all the way back
+    to compiling with -O0 on that platform.
+
+  * Add a --limit-max-xfer option to seedd and bbcheck.  This gives people a
+    runtime workaround for systems where, despite having an ostensibly new
+    enough Linux kernel and libusb version to support large bulk URBs, the
+    hardware chipset has some quirk that isn't yet fixed in the kernel driver
+    which makes using them troublesome (I'm looking at you RPI3).  If passed,
+    this will force the old 16kB limit on individual requests to usbfs.  That
+    doesn't have any effect on the size of requests that users can make from
+    our code, it just might be slightly slower at obtaining huge numbers of
+    bits, since we need to get them in smaller chunks internally.
+
+  * Add an example of how to obtain random integers within an arbitrary range
+    where every value in that range remains equally probable.  This isn't a
+    difficult thing to do, but enough people have asked to provide a working
+    example, and there's enough history elsewhere of people doing something
+    naive, like using a modulus to limit the range (thus making some values
+    more probable than others), to have a good example easily available that
+    users can refer to.
+
+  * Search for where udevadm is found in the qemu-hook script.  Its installed
+    path was changed by systemd 204 in Jessie from /sbin to /bin, so now we
+    need to deal with multiple interfaces to stay portable, since there are
+    supported distro releases that aren't EOL yet which still have it in the
+    old location.  Jessie's systemd had a compat link to make it available in
+    both places, but the systemd maintainers want to drop that for Buster (and
+    not all other distros with newer systemd provide that).  Closes: #852582
+
+  * Tweak the udev rules to work around a bug in udev versions up to at least
+    232-25 which makes testing ATTR keys with != become a perilous folly.  If
+    an event occurs for a device which does not have that attribute at all,
+    then the rule will be skipped, the same as if it was actually equal to the
+    value being tested for.
+
+ -- Ron Lee <ron@debian.org>  Mon, 19 Jun 2017 13:31:17 +0930
+
+bit-babbler (0.6) unstable; urgency=medium
+
+  * Update the libvirt Suggests to include libvirt-clients, since libvirt-bin
+    got split into a bunch of pieces in Jessie (because GNOME, see #679074),
+    and -clients is where virsh has moved to now.
+
+  * Add configure tests for the functions udev_device_get_tags_list_entry and
+    udev_device_get_sysattr_list_entry which were added in udev 154 and 167
+    respectively.  The RHEL/CentOS 6 release appears to ship with udev 147,
+    so we can't use them there, and it won't be fully EOL for some time yet.
+    That's not a big deal, we only use them to output extra device information
+    when the debug level is cranked up, so we can just omit that code on any
+    systems where they aren't supported.
+
+  * Include xlocale.h explicitly on platforms where we need that for strtod_l.
+
+  * Initialise struct addrinfo more portably.  There's little point to trying
+    to be clever with static initialisers while g++ has limited support for
+    them in C++ code, just do it in a way that will work everywhere.
+
+  * Add an explicit guard rather than a platform check around the code to
+    append a wstring as UTF-8 and disable it by default for all platforms now.
+    We don't actually need or use that anywhere here right now, and there are
+    more platforms than MSW where wchar_t is unspecified and/or insane.  So
+    we'll worry about enabling it again if we ever do need it here, since we
+    do want this to be portable to those still.
+
+  * Automatically add -D_REENTRANT for compilers that don't do that themselves
+    when -pthread is used.
+
+  * Preserve the Chi^2 statistic when long term results need to be normalised
+    to prevent wrap around, and improve the precision on scaling the other
+    metrics to minimise discontinuities, especially on machines with a 32-bit
+    size_t where the normalisation is more likely to be needed in practice.
+    Many thanks to George Tsegas for his extensive testing, and careful and
+    critical attention to questioning all of the results of that.
+
+  * Fix the framing/status check to handle devices plugged into USB 1.0 ports.
+    Apparently there are still a few of those left in the wild.
+
+ -- Ron Lee <ron@debian.org>  Fri, 17 Jun 2016 23:36:55 +0930
+
+bit-babbler (0.5) unstable; urgency=medium
+
+  * Add more options to optimise for minimal power consumption.  The defaults
+    before now were mostly focussed on keeping a good supply of fresh entropy
+    being regularly mixed into the kernel pool, and on minimising the risk of
+    starvation delays when demand is high.  But there's an equally important
+    group of users who not only want good entropy, but also want to minimise
+    idle power usage as much as possible.  So we now have some extra tunables
+    to better support that too.
+
+    The rate at which new entropy is mixed into the kernel pool even when it
+    has not fallen below its low water mark is now directly configurable, as
+    is the rate at which we throttle down requesting more entropy from the
+    hardware when real demand for it falls.  Tuning these can minimise how
+    often we are responsible for waking the CPU on an otherwise idle system.
+
+    It is also now possible to configure the devices to be released when we
+    expect to be idle beyond a given period of time, which will allow them to
+    be powered down and suspended, and only woken again when we do need more
+    entropy from them.  There are new udev rules which automatically enable
+    the USB autosuspend feature of the Linux kernel for them when they are
+    plugged in, which means this will work without needing to manually set
+    all that up (unless you want to further tweak the parameters there too).
+
+  * Don't create the control socket by default when only a limited number of
+    output --bytes are requested.  It can still be enabled explicitly if you
+    do want it available while they are being read, but that's normally of
+    fairly limited use, and it's otherwise just annoying to have to remember
+    to explicitly disable it when extracting a block of entropy in this way,
+    and confusing to users if it complains they don't have permission to
+    (re)create it in the default location.
+
+  * Defer device initialisation until the pool threads have been started.
+    Most users won't really notice any difference from that, but when you
+    have 100 devices in a machine together then even small delays quickly
+    add up to become a thumb twiddling pause if they are serialised rather
+    than being run in parallel.
+
+  * Better support for pass-through to libvirt managed virtual machines when
+    there is more than one BitBabbler device in the host.
+
+    This is still more painful than it really ought to be, but we now have a
+    big enough hammer pounding on enough of the rough edges in libvirt support
+    for things to work like USB devices should be expected to work.  They can
+    be hotplugged dynamically without admin intervention to the guest machines
+    you want them assigned to, and assigned to guest machines without fragile
+    hacks based on which USB port they are plugged into.
+
+ -- Ron Lee <ron@debian.org>  Wed, 23 Dec 2015 00:38:47 +1030
+
+bit-babbler (0.4) unstable; urgency=medium
+
+  * Switch to using libusb-1.0 now.  It turns out that libusb-0.1 doesn't
+    actually work on kFreeBSD, it only builds there ...  which isn't very
+    helpful.  The kFreeBSD port actually uses FreeBSD's own libusb which also
+    provides a compatibility API for libusb-1.0 - and we need to jump through
+    a few small extra hoops to use it, but it has the advantage of actually
+    working, which is a plus.  This also means we immediately get much better
+    support and lots of bugfixes for non-Debian platforms too, so this should
+    work everywhere that current releases of libusb do now.
+
+  * Drop libftdi.  This is partly a consequence of the above, since a version
+    of it built with libusb-1.0 isn't widely available, and partly a result of
+    realising we weren't really using anything from it that we couldn't just
+    do more easily and more directly though libusb ourselves anyway.  Our code
+    ended up being significantly refactored and simplified as a result of this
+    and it opened the way for a number of additional easy improvements too.
+
+  * Drop the --device-num option for selecting devices.  Having an arbitrary
+    enumeration isn't really all that useful in hotplug environments, and the
+    --device-id option now transparently supports selecting devices by their
+    serial number, or by either their logical or physical address on the bus,
+    so the duplication there was only becoming a source of confusion.
+
+  * More speed and efficiency tuning.  As a result of now having more direct
+    control over the device we've been able to notably reduce some of the
+    overheads of streaming data out of it, which means we're now using less
+    CPU cycles with an increase in throughput for the same device clock rate.
+
+  * Make the libudev build dependency conditional on linux-any so the kFreeBSD
+    buildds will actually want to build it.  We can't do much for Hurd until
+    someone actually ports libusb-1.0 to it.
+
+  * Make the use of signals which may not exist on all platforms conditional,
+    which should enable this to build on MIPS, Sparc, and Alpha too.
+
+ -- Ron Lee <ron@debian.org>  Sat, 05 Dec 2015 04:40:11 +1030
+
+bit-babbler (0.3) unstable; urgency=medium
+
+  * Include a simple example script for reading from the UDP socket.
+  * Include the documentation for configuring virtual machine pass-through
+    in the binary package as well.
+  * Document how to deal with cgroups mandatory access control when using
+    devices inside libvirt managed virtual machines.
+  * Initial upload to Debian, Closes: #805979
+
+ -- Ron Lee <ron@debian.org>  Tue, 24 Nov 2015 23:15:24 +1030
+
+bit-babbler (0.2) unstable; urgency=low
+
+  * Add the option to read entropy directly from a UDP socket too.
+  * Permit TCP to be used for the control socket.  Not all platforms have
+    unix domain sockets, and some people might actually want to be able to
+    access it remotely anyway.
+  * Guard the Linux specific code (for feeding the kernel entropy) to only
+    build on Linux, and get it to build with the mingw-w64 cross compiler.
+  * Add a system group bit-babbler, and a udev rule which grants permission
+    to access the device(s) to people in that group.  This is mostly useful
+    for people who want to stream bits directly out of the devices and don't
+    need or want the privilege required to be able to write entropy directly
+    to the kernel pool.
+
+ -- Ron Lee <ron@debian.org>  Sat, 27 Jun 2015 01:17:17 +0930
+
+bit-babbler (0.1) unstable; urgency=low
+
+  * Initial release
+
+ -- Ron Lee <ron@debian.org>  Tue, 24 Feb 2015 09:23:18 +1030

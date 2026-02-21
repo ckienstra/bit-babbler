@@ -1,0 +1,191 @@
+dnl Makeup i18n configure boilerplate.
+dnl
+dnl Copyright 2003 - 2021, Ron <ron@debian.org>
+dnl
+dnl This file is distributed under the terms of the GNU GPL version 2.
+dnl
+dnl As a special exception to the GPL, it may be distributed without
+dnl modification as a part of a program using a makeup generated build
+dnl system, under the same distribution terms as the program itself.
+
+dnl Internal string encoding.
+
+dnl XXX Expand this to specify the actual encoding to use.
+dnl eg.  WCHAR_T, utf8, iso88591 etc.
+
+AC_ARG_ENABLE([wide_strings],
+              [AS_HELP_STRING([--enable-wide_strings],
+                             [use wide characters by default for internal]dnl
+                             [ string storage (default NO)])],
+              [mu_cv_enable_wide_strings=$enableval],
+              [mu_cv_enable_wide_strings=no])
+
+AC_DEFINE_UNQUOTED([EM_USE_WIDE_STRINGS],
+                   [$(test "$mu_cv_enable_wide_strings" != yes)$?],
+                   [use wide characters by default for internal string storage])
+
+AS_IF([test "$mu_cv_enable_wide_strings" = yes],[
+
+    makeup_build_flavour="${makeup_build_flavour}w"
+
+    case $host in
+        *-*-cygwin* | *-*-mingw32* )
+            AC_DEFINE([UNICODE],[1],[Enable Windows in 'UNICODE' mode])
+            AC_MSG_NOTICE([using UNICODE])
+            ;;
+    esac
+])
+
+
+dnl On FreeBSD we need xlocale.h for strtod_l.  That header is available on
+dnl Linux (though we shouldn't normally include it directly), but is not
+dnl available for mingw, and possibly some other platforms too (since it is
+dnl not a standard header at this time).
+AC_CHECK_HEADERS([xlocale.h])
+
+dnl Windows has it's own incarnations of newlocale/strtod_l, and some platforms
+dnl like OpenBSD (as of 6.1) don't implement the POSIX newlocale at all, let
+dnl alone the xlocale extensions which use it.  All we can really do for those
+dnl is fall back to using strtod, and if the user is in a locale where the
+dnl decimal point is a comma or something similar, they get to keep the pieces
+dnl or will need to override their default locale for running this.
+AC_CHECK_FUNCS([newlocale])
+
+dnl The _create_locale function needs a later C runtime than the default.
+AS_IF([test "$ac_cv_func_newlocale" = yes],[],
+      [ACM_PUSH_VAR([$0],[LIBS])dnl
+       ACM_ADD_LIBS([LIBS],[-lmsvcr110])
+       AC_CHECK_FUNCS([_create_locale])
+       ACM_POP_VAR([$0],[LIBS])dnl
+    ])
+
+AC_CHECK_FUNCS([strtod_l _strtod_l], [break])
+
+AS_IF([test "$ac_cv_func_strtod_l" = yes],[],
+      [test "$ac_cv_func__strtod_l" = yes],[],
+      [AC_MSG_WARN([No localisable strtod available on this system.])
+       AC_MSG_WARN([Binaries will need to be run in the "C" locale.])])
+
+
+
+dnl String encoding conversion.
+AC_ARG_WITH([iconv],
+            [AS_HELP_STRING([--with-iconv],
+                [use iconv (from glibc or libiconv) for string encoding]dnl
+                [ conversion (default YES)])],
+            [mu_cv_with_iconv=$withval],
+            [mu_cv_with_iconv=yes])
+
+dnl Localised string substitution.
+AC_ARG_WITH([gettext],
+            [AS_HELP_STRING([--with-gettext],
+                [use gettext (from glibc or libintl) to localise selected]dnl
+                [ literal strings (default YES)])],
+            [mu_cv_with_gettext=$withval],
+            [mu_cv_with_gettext=yes])
+
+
+dnl Some of these are covered by AM_GNU_GETTEXT now.
+dnl AC_ARG_VAR([XGETTEXT],[xgettext command])
+dnl AC_ARG_VAR([MSGMERGE],[msgmerge command])
+dnl AC_ARG_VAR([MSGFMT],[msgfmt command])
+
+dnl A couple still are not.
+AC_ARG_VAR([XGETTEXT_ARGS],[xgettext arguments])
+AC_ARG_VAR([MSGINIT],[msginit command])
+AC_ARG_VAR([ALL_LINGUAS],[The list of supported ISO 639 language codes])
+AC_ARG_VAR([GETTEXT_MSG_SRC],[Limit the search for messages to $(GETTEXT_MSG_SRC)/])
+
+dnl This one is needed for the AC_LIB_RPATH macro, required by AM_GNU_GETTEXT.
+FIND_AND_LINK_IF_LOCAL([config.rpath],[${ac_aux_dir#$srcdir/}],[/usr/share/gettext])
+
+
+dnl This is needed because AM_ICONV_LINK, which can be pulled in by either AM_ICONV
+dnl or by AM_GNU_GETTEXT, currently leaks memory when running some test code, which
+dnl means the check for "working iconv" will wrongly fail if LSan is active.  We do
+dnl need to wrap a much larger scope with this than would be ideal, because we can't
+dnl know exactly where the offending test will be expanded and run.
+ACM_SUPPRESS_LSAN([iconv])
+
+dnl We check this before iconv, as it _may_ do some iconv tests
+dnl that we will not need to repeat, or even hit the cache for.
+AS_IF([test "$mu_cv_with_gettext" != no],[
+
+    dnl FIXME: AM_GNU_GETTEXT pollutes CPPFLAGS with the default path
+    dnl        for mingw-cross builds...  so for now:
+    ACM_PUSH_VAR([$0],[CPPFLAGS])dnl
+
+    dnl imported from /usr/share/aclocal/gettext.m4
+    AM_GNU_GETTEXT([external],[need-ngettext])
+    ACM_POP_VAR([$0],[CPPFLAGS])dnl
+
+    dnl These are set by AM_GNU_GETTEXT above now.
+    dnl AC_CHECK_TOOL(XGETTEXT, xgettext)
+    dnl AC_CHECK_TOOL(MSGMERGE, msgmerge)
+    dnl AC_CHECK_TOOL(MSGFMT, msgfmt)
+
+    dnl This is done implicitly by linking to a built test.
+    dnl AC_CHECK_HEADERS(libintl.h)
+
+    dnl Making this test useless.
+    dnl if test "$ac_cv_header_libintl_h" != yes; then
+
+    dnl and we must do this obscenity instead
+    AS_IF([test "$gt_cv_func_gnugettext2_libc" != yes &&
+           test "$gt_cv_func_gnugettext2_libintl" != yes],[
+        AC_MSG_WARN([gettext not supported on this platform.  disabling.])
+        mu_cv_with_gettext=no
+    ],[
+        dnl These we must still do for ourself.
+        AC_CHECK_TOOL([MSGINIT],[msginit],[:])
+        XGETTEXT_ARGS="-C -k_ -kP_:1,2 -s"
+        ACM_ADD_LIBS([I18N_LIBS],[\$(LIBINTL)])
+
+        dnl Do we really want to always add this unconditionally here?
+        ACM_ADD_LIBS([LIBS],[$LIBINTL])
+    ])
+])
+
+AC_DEFINE_UNQUOTED([EM_USE_GETTEXT],
+                   [$(test "$mu_cv_with_gettext" != yes)$?],
+                   [use gettext to localise selected literal strings])
+
+
+dnl String encoding conversion.
+AS_IF([test "$mu_cv_with_iconv" != no],[
+
+    dnl FIXME: AM_ICONV_LINK pollutes CPPFLAGS with the default path
+    dnl        for mingw-cross builds...  so for now:
+    ACM_PUSH_VAR([$0],[CPPFLAGS])dnl
+
+    dnl imported from /usr/share/aclocal/iconv.m4
+    AM_ICONV
+    ACM_POP_VAR([$0],[CPPFLAGS])dnl
+
+    dnl and a couple of useful things it does not do.
+    AS_IF([test "$am_cv_func_iconv" = yes],[
+
+        case $host in
+            *-*-cygwin* | *-*-mingw32* )  mu_path_iconv=iconv                   ;;
+            * )                           AC_PATH_PROG([mu_path_iconv],[iconv]) ;;
+        esac
+
+        AS_IF([test -n "$mu_path_iconv"],[
+            AC_DEFINE_UNQUOTED([ICONV_UTIL_PATH],
+                               ["$mu_path_iconv"],
+                               [Define this with the path to the iconv utility])
+        ])
+
+        AC_DEFINE_UNQUOTED([HAVE_ICONV_CONST],
+                           [$(test "$am_cv_proto_iconv_arg1" != const)$?],
+                           [The system iconv requires a const char** second argument])
+
+        ACM_ADD_LIBS([I18N_LIBS],[\$(LIBICONV)])
+
+        dnl Do we really want to always add this unconditionally too?
+        ACM_ADD_LIBS([LIBS],[$LIBICONV])
+    ])
+])
+
+ACM_RESTORE_LSAN([iconv])
+

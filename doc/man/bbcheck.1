@@ -1,0 +1,205 @@
+.\"                                      Hey, EMACS: -*- nroff -*-
+.\" First parameter, NAME, should be all caps
+.\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
+.\" other parameters are allowed: see man(7), man(1)
+.TH BBCHECK 1 "May 29, 2017"
+.\" Please adjust this date whenever revising the manpage.
+.\"
+.\" Some roff macros, for reference:
+.\" .nh        disable hyphenation
+.\" .hy        enable hyphenation
+.\" .ad l      left justify
+.\" .ad b      justify to both left and right margins
+.\" .nf        disable filling
+.\" .fi        enable filling
+.\" .br        insert line break
+.\" .sp <n>    insert n+1 empty lines
+.\" for manpage-specific macros, see man(7)
+.SH NAME
+bbcheck \- run automated tests on BitBabbler hardware RNG devices
+.SH SYNOPSIS
+.B bbcheck
+.RI [ options ]
+
+
+.SH DESCRIPTION
+The \fBbbcheck\fP utility is is tool for quickly and simply analysing the
+output of a BitBabbler RNG at various bitrates.  It can run tests on multiple
+devices in parallel, and highlight the best and worst results from a series of
+tests on each device.
+
+
+.SH OPTIONS
+The following options are available:
+
+.TP
+.B \-s, \-\-scan
+Scan the system for available BitBabbler devices.
+
+.TP
+.BI "\-i, \-\-device\-id=" id
+Select a BitBabbler device to analyse by its unique ID.  If no devices are
+explicitly specified then the default is to use all of them which are present
+when testing begins.  This option may be passed multiple times to test multiple
+devices.  The \fIid\fP may be the device serial number, or its logical address
+in the form:
+
+   [\fIbusnum\fP:]\fIdevnum\fP
+
+or on systems where knowing the USB topology is supported, its physical address
+in the form
+
+   \fIbusnum\fP\-\fIport\fP[.\fIport\fP\ ...]
+
+For a logical address the \fIbusnum\fP part is optional, but if \fIdevnum\fP
+is not unique across all buses, then exactly which device will be selected if
+it is not fully specified becomes a matter of chance.  All of the available IDs
+which can be used to refer to a device will be reported by the \fB\-\-scan\fP
+option.  Bus, device, and port numbers are expected to be decimal integers.
+
+Since \fBbbcheck\fP only operates on available devices and does not wait for
+a device to be hotplugged, it is an error to specify an ID which does not
+refer to a device currently available in the system.
+
+.TP
+.BI "\-r, \-\-bitrate=" min[:max]
+Select the bitrate, or range of bitrates, to analyse (in bits per second).
+The available bitrates are determined by an integer clock divider, so not every
+rate is exactly achievable.  An unsupported rate will be rounded up to the next
+higher rate.  For convenience the rate may be followed by an SI multiplier (eg.
+2.5M for 2500000).  If a colon separated range is specified, then all possible
+bitrates between \fImin\fP and \fImax\fP will be tested.
+
+.TP
+.BI "\-b, \-\-bytes=" n
+The number of bytes to analyse for each test.  A suffix of 'k', 'M', or 'G' will
+multiply \fIn\fP by the respective power of two.
+
+.TP
+.BI "\-B, \-\-block\-size=" bytes
+The block size used for folding.  This size must be a multiple of 2^n, where n
+is the level of folding used (ie. it must be able to fold the desired number of
+times without any remainder).  A suffix of 'k', 'M', or 'G' will scale
+\fIbytes\fP by the respective power of two.  Default is 64kB.  A larger block
+size will mix samples taken over a longer timescale.  At high bitrates this will
+mean more of the lower frequency noise can be factored into each sample where
+otherwise the higher frequency noise would dominate.  The optimum block size
+(beyond which any change to the result is negligible) for any given bitrate is
+still a matter that is ripe for further study.  See the \fB\-\-fold\fP option
+below for a more detailed description of folding.
+
+.TP
+.B \-A, \-\-all\-results
+Show all the test results, not just the final summary.
+
+.TP
+.B "    \-\-no\-colour"
+Don't colour the final results.  By default the four best results will be
+highlighted bright-green, dull-green, yellow, and orange, while the worst
+result will be highlighted in red.  This option suppresses the output of
+terminal escape codes which are responsible for that.
+
+.TP
+.B \-v, \-\-verbose
+Make more noise about what is going on internally.  If used (once) with the
+\fB\-\-scan\fP option this will show more information about each device, but
+otherwise it's mostly only information useful for debugging.  It may be passed
+multiple times to get swamped with even more information.
+
+.TP
+.B \-?, \-\-help
+Show a shorter version of all of this, which may fit on a single page.
+
+.TP
+.B "    \-\-version"
+Report the \fBbbcheck\fP release version.
+
+
+.SS Per device options
+The following options may be used multiple times to individually configure
+each device when more than one BitBabbler is available.  If passed before any
+\fB\-\-device\-id\fP option, then they set new default values which will apply
+to every device.  If passed after one of those options they will only be
+applied to the immediately preceding device.
+
+.TP
+.BI "    \-\-latency=" ms
+Override the calculated value for the USB latency timer.  This controls the
+maximum amount of time that the device will wait if there is any data in its
+internal buffer (but less than a full packet), before sending it to the host.
+If this timer expires before a packet can be filled, then a short packet will
+be sent to the host.  The default value is chosen to ensure that we do not
+send more short packets than necessary for the selected bitrate, since that
+will increase the number of packets sent and the amount of CPU time which must
+be spent processing them, to transfer the same amount of data.
+
+Unless you are experimenting with changes to the low level code, there is
+probably no reason to ever use this option to override the latency manually.
+
+.TP
+.BI "\-f, \-\-fold=" n
+Set the number of times to fold the BitBabbler output before analysing it.
+Each fold will take the first half of the block that was read and XOR it with
+the bits in the second half.  This will halve the throughput, but concentrate
+the available entropy more densely into the bits that remain.
+
+There are two main things this is expected to do based on the BitBabbler design.
+It will better mix the low-frequency noise that is captured with that of the
+higher frequencies, allowing it to sample at higher bitrates without narrowing
+the noise bandwidth available to influence adjacent bits.  It will help to break
+up any transient local correlations that might occur in the physical processes
+from which ambient environmental noise is collected.
+
+Folding should never reduce the real entropy of each sample, but when all is
+working exactly as it should, it may not do anything to increase it either.
+Mathematically, an XOR summation is expected to exponentially smooth any bias
+in a stream of independent bits, with the result having at least as much
+entropy as the least predictable of either of the two inputs (in the same way
+that a one time pad is no less secure despite the plaintext having much less
+entropy than the pad does).
+
+.TP
+.BI "    \-\-enable\-mask=" mask
+Select a subset of the generators on BitBabbler devices with multiple entropy
+sources.  The argument is a bitmask packed from the LSB, with each bit position
+controlling an individual source, enabling it when set to 1.  As a special
+case for \fBbbcheck\fP, if a \fImask\fP of 0 is used, then the tests will be
+performed on each source unit individually.  A \fImask\fP of 16 (0x10) will
+first test each source individually, and then all of of them enabled together
+as well.
+
+.TP
+.B "    \-\-limit\-max\-xfer"
+Limit the maximum transfer chunk size to 16kB.  On Linux, prior to kernel 3.3,
+individual bulk transfer requests were somewhat arbitrarily limited to 16kB.
+With kernels later than that, larger transfers were supported, and we will
+make use of those to optimise transfer speeds for large requests at high
+bitrates when a new enough kernel and libusb with support for this are both
+available.
+
+Unfortunately, the USB chipsets on some motherboards are still buggy when these
+larger transfers are used, and there is no easy way for us to automatically
+detect those, since the symptoms they exhibit do vary and aren't always
+directly visible to our code.  Ideally any problems like that should be
+reported to the kernel maintainers, where they can be fixed, or worked around
+for device specific quirks, but this option allows you to explicitly request
+that the transfer size be limited on machines where you are experiencing
+problems with that.
+
+If in doubt, it is safe to use this option on any system, the impact on
+transfer speed is relatively minimal unless you are trying to obtain huge
+numbers of bits as quickly as possible.  But it's not the default, since at
+present only a very small number of systems are still known to be affected,
+and that number should continue to decrease over time.
+
+
+.SH SEE ALSO
+.BR seedd (1),
+.BR bbctl (1).
+
+
+.SH AUTHOR
+.B bbcheck
+was written by Ron <ron@debian.org>.  You can send bug reports, feature requests,
+praise and complaints to support@bitbabbler.org.
+

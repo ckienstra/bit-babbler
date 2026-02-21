@@ -1,0 +1,4 @@
+vm-conf_TYPE = DATA
+vm-conf_DATA_SRCDIR = $(srcdir)/libvirt
+vm-conf_DATA_INSTALLDIR = /etc/bit-babbler
+vm-conf_DATA_FILES = vm.conf

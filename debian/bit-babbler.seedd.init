@@ -1,0 +1,114 @@
+#!/bin/bash
+#
+### BEGIN INIT INFO
+# Provides:          seedd
+# Required-Start:    $local_fs $syslog
+# Required-Stop:     $local_fs $syslog
+# Default-Start:     S
+# Default-Stop:      0 1 6
+# Short-Description: BitBabbler entropy source daemon
+# Description:
+### END INIT INFO
+
+# Note we deliberately don't create a pidfile for this.
+# We could, but it's not really worth the fuss if we have --exec matching.
+
+NAME=seedd
+DESC="BitBabbler entropy source daemon"
+DAEMON=/usr/bin/seedd
+SEEDD_CONFIG=/etc/bit-babbler/seedd.conf
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+[ -x $DAEMON ] || exit 0
+
+. /lib/init/vars.sh
+. /lib/lsb/init-functions
+
+
+do_start()
+{
+	# Return
+	#   0 if daemon has been started
+	#   1 if daemon was already running
+	#   2 if daemon could not be started
+	start-stop-daemon --start --quiet --exec $DAEMON --test > /dev/null	\
+		|| return 1
+
+	start-stop-daemon --start --quiet --exec $DAEMON -- -d -C $SEEDD_CONFIG	\
+		|| return 2
+}
+
+do_stop()
+{
+	# Return
+	#   0 if daemon has been stopped
+	#   1 if daemon was already stopped
+	#   2 if daemon could not be stopped
+	#   other if a failure occurred
+	start-stop-daemon --stop --quiet --retry=TERM/30/KILL/5 --exec $DAEMON
+}
+
+do_reload() {
+	# We don't need this, we have no config to reload, not yet anyway ...
+	# start-stop-daemon --stop --signal 1 --quiet --exec $DAEMON
+	return 0
+}
+
+
+case "$1" in
+  start)
+	[ "$VERBOSE" != no ] && log_daemon_msg "Starting $DESC " "$NAME"
+	do_start
+	case "$?" in
+		0|1)	[ "$VERBOSE" != no ] && log_end_msg 0 ;;
+		2)	[ "$VERBOSE" != no ] && log_end_msg 1; exit 1 ;;
+	esac
+	;;
+
+  stop)
+	[ "$VERBOSE" != no ] && log_daemon_msg "Stopping $DESC" "$NAME"
+	do_stop
+	case "$?" in
+		0|1)	[ "$VERBOSE" != no ] && log_end_msg 0 ;;
+		2)	[ "$VERBOSE" != no ] && log_end_msg 1; exit 1 ;;
+	esac
+	;;
+
+  reload)
+	log_daemon_msg "Reloading $DESC" "$NAME"
+	do_reload
+	log_end_msg $?
+	;;
+
+  force-reload|restart)
+	log_daemon_msg "Restarting $DESC" "$NAME"
+	do_stop
+	case "$?" in
+	    0|1)
+		do_start
+		case "$?" in
+			0) log_end_msg 0 ;;
+			1) log_end_msg 1; exit 1 ;; # Old process is still running
+			*) log_end_msg 1; exit 1 ;; # Failed to start
+		esac
+		;;
+	    *)
+		# Failed to stop
+		log_end_msg 1
+		exit 1
+		;;
+	esac
+	;;
+
+  status)
+	status_of_proc "$DAEMON" "$NAME" && exit 0 || exit $?
+	;;
+
+  *)
+	echo "Usage: $0 {start|stop|reload|force-reload|restart|status}" >&2
+	exit 3
+	;;
+esac
+
+exit 0

@@ -1,0 +1,392 @@
+/* private_setup.h.in.  Generated from configure.ac by autoheader.  */
+
+/* Define if building universal (internal helper macro) */
+#undef AC_APPLE_UNIVERSAL_BUILD
+
+/* Macro for function attribute 'cold' */
+#undef BB_COLD
+
+/* Macro for function attribute 'const' */
+#undef BB_CONST
+
+/* Macro for statement attribute 'fallthrough' */
+#undef BB_FALLTHROUGH
+
+/* Macro for function attribute 'noreturn' */
+#undef BB_NORETURN
+
+/* Macro for function attribute 'no_sanitize("float-divide-by-zero")' */
+#undef BB_NO_SANITIZE_FLOAT_DIVIDE_BY_ZERO
+
+/* Macro for function attribute 'no_sanitize("unsigned-integer-overflow")' */
+#undef BB_NO_SANITIZE_UNSIGNED_INTEGER_OVERFLOW
+
+/* Macro for function attribute 'format (__printf__,fmt,arg1)' */
+#undef BB_PRINTF_FORMAT
+
+/* Macro for function attribute 'pure' */
+#undef BB_PURE
+
+/* Macro for function attribute 'format (__strftime__,fmt,0)' */
+#undef BB_STRFTIME_FORMAT
+
+
+/* Safely stringify a pragma option (which may already include quotes) */
+#define EM_PRAGMA(p) _Pragma (#p)
+
+
+/* Save the current diagnostic settings, and try to add or modify some
+   diagnostic Option to have the given Action.  Action may be one of:
+   error, warning, or ignored, setting the new disposition of Option.
+
+   If Option is not recognised by the compiler this request will be
+   silently ignored.  Clang-6 stopped using -Wunknown-pragmas (which was
+   implied by -Wpragmas) for these, so we need to silence another option
+   for it (which in turn still needs -Wpragmas, as GCC of course doesn't
+   support clang's new -Wunknown-warning-option. Cooperation is hard ...
+ */
+#define EM_TRY_PUSH_DIAGNOSTIC( Action, Option )	        \
+ EM_PRAGMA(GCC diagnostic push)				        \
+ EM_PRAGMA(GCC diagnostic ignored "-Wpragmas")		        \
+ EM_PRAGMA(GCC diagnostic ignored "-Wunknown-warning-option")	\
+ EM_PRAGMA(GCC diagnostic Action Option)
+
+/* Save the current diagnostic settings, and try to add or modify some
+   diagnostic Option to have the given Action.  Action may be one of:
+   error, warning, or ignored, setting the new disposition of Option.
+
+   If Option is not recognised by the compiler this request may itself
+   generate a compile time diagnostic warning or error depending on
+   the compiler defaults and command line options used.
+ */
+#define EM_PUSH_DIAGNOSTIC( Action, Option )		\
+ EM_PRAGMA(GCC diagnostic push)				\
+ EM_PRAGMA(GCC diagnostic Action Option)
+
+/* Set the Action for additional diagnostic Options.  The current settings
+   are not pushed, so a call to EM_POP_DIAGNOSTIC will revert all changes
+   made since the last time EM_PUSH_DIAGNOSTIC was used.
+ */
+#define EM_MORE_DIAGNOSTIC( Action, Option )		\
+ EM_PRAGMA(GCC diagnostic Action Option)
+
+
+/* Equivalent to EM_TRY_PUSH_DIAGNOSTIC( ignored, Option ) */
+#define EM_TRY_PUSH_DIAGNOSTIC_IGNORE( Option )		\
+ EM_TRY_PUSH_DIAGNOSTIC( ignored, Option )
+
+/* Equivalent to EM_PUSH_DIAGNOSTIC( ignored, Option ) */
+#define EM_PUSH_DIAGNOSTIC_IGNORE( Option )		\
+ EM_PUSH_DIAGNOSTIC( ignored, Option )
+
+/* Equivalent to EM_MORE_DIAGNOSTIC( ignored, Option ) */
+#define EM_MORE_DIAGNOSTIC_IGNORE( Option )		\
+ EM_MORE_DIAGNOSTIC( ignored, Option )
+
+
+/* Equivalent to EM_TRY_PUSH_DIAGNOSTIC( warning, Option ) */
+#define EM_TRY_PUSH_DIAGNOSTIC_WARN( Option )		\
+ EM_TRY_PUSH_DIAGNOSTIC( warning, Option )
+
+/* Equivalent to EM_PUSH_DIAGNOSTIC( warning, Option ) */
+#define EM_PUSH_DIAGNOSTIC_WARN( Option )		\
+ EM_PUSH_DIAGNOSTIC( warning, Option )
+
+/* Equivalent to EM_MORE_DIAGNOSTIC( warning, Option ) */
+#define EM_MORE_DIAGNOSTIC_WARN( Option )		\
+ EM_MORE_DIAGNOSTIC( warning, Option )
+
+
+/* Equivalent to EM_TRY_PUSH_DIAGNOSTIC( error, Option ) */
+#define EM_TRY_PUSH_DIAGNOSTIC_ERROR( Option )		\
+ EM_TRY_PUSH_DIAGNOSTIC( error, Option )
+
+/* Equivalent to EM_PUSH_DIAGNOSTIC( error, Option ) */
+#define EM_PUSH_DIAGNOSTIC_ERROR( Option )		\
+ EM_PUSH_DIAGNOSTIC( error, Option )
+
+/* Equivalent to EM_MORE_DIAGNOSTIC( error, Option ) */
+#define EM_MORE_DIAGNOSTIC_ERROR( Option )		\
+ EM_MORE_DIAGNOSTIC( error, Option )
+
+
+/* Restore the diagnostic state to what it was before the last time it was
+   pushed.  If there is no corresponding push the command-line options are
+   restored.
+ */
+#define EM_POP_DIAGNOSTIC				\
+ EM_PRAGMA(GCC diagnostic pop)
+
+
+/* build with additional debugging code */
+#undef EMDEBUG
+
+/* System directory for run-time variable data */
+#undef EM_SYSTEM_RUNDIR
+
+/* use gettext to localise selected literal strings */
+#undef EM_USE_GETTEXT
+
+/* Build with service manager NOTIFY_SOCKET support */
+#undef EM_USE_NOTIFY_SOCKET
+
+/* do extra cleanup to be valgrind clean */
+#undef EM_USE_VALGRIND_FRIENDLY
+
+/* use wide characters by default for internal string storage */
+#undef EM_USE_WIDE_STRINGS
+
+/* Define to 1 if translation of program messages to the user's native
+   language is requested. */
+#undef ENABLE_NLS
+
+/* The fully expanded $bindir path */
+#undef EXP_BINDIR
+
+/* The fully expanded $datadir path */
+#undef EXP_DATADIR
+
+/* The fully expanded $docdir path */
+#undef EXP_DOCDIR
+
+/* The fully expanded $exec_prefix path */
+#undef EXP_EXEC_PREFIX
+
+/* The fully expanded $includedir path */
+#undef EXP_INCLUDEDIR
+
+/* The fully expanded $libdir path */
+#undef EXP_LIBDIR
+
+/* The fully expanded $localedir path */
+#undef EXP_LOCALEDIR
+
+/* The fully expanded $mandir path */
+#undef EXP_MANDIR
+
+/* The fully expanded $prefix path */
+#undef EXP_PREFIX
+
+/* The fully expanded $sbindir path */
+#undef EXP_SBINDIR
+
+/* Have namespace abi alias to __cxxabiv1 */
+#undef HAVE_ABI_ALIAS_TO_CXXABIV1
+
+/* Have abi::__forced_unwind support */
+#undef HAVE_ABI_FORCED_UNWIND
+
+/* Workaround OpenBSD _thread_flockfile cancellation bug */
+#undef HAVE_BROKEN_STDIO_LOCKING
+
+/* Define to 1 if you have the Mac OS X function
+   CFLocaleCopyPreferredLanguages in the CoreFoundation framework. */
+#undef HAVE_CFLOCALECOPYPREFERREDLANGUAGES
+
+/* Define to 1 if you have the Mac OS X function CFPreferencesCopyAppValue in
+   the CoreFoundation framework. */
+#undef HAVE_CFPREFERENCESCOPYAPPVALUE
+
+/* Define to 1 if you have the `clock_gettime' function. */
+#undef HAVE_CLOCK_GETTIME
+
+/* Define if the GNU dcgettext() function is already present or preinstalled.
+   */
+#undef HAVE_DCGETTEXT
+
+/* Define to 1 if you have the declaration of `LOG_MAKEPRI', and to 0 if you
+   don't. */
+#undef HAVE_DECL_LOG_MAKEPRI
+
+/* Define to 1 if you have the declaration of `SIGRTMIN', and to 0 if you
+   don't. */
+#undef HAVE_DECL_SIGRTMIN
+
+/* Define to 1 if you have the <ext/hash_map> header file. */
+#undef HAVE_EXT_HASH_MAP
+
+/* Define if the GNU gettext() function is already present or preinstalled. */
+#undef HAVE_GETTEXT
+
+/* Define to 1 if you have the `gettimeofday' function. */
+#undef HAVE_GETTIMEOFDAY
+
+/* Define to 1 if you have the `gmtime_r' function. */
+#undef HAVE_GMTIME_R
+
+/* Define if you have the iconv() function and it works. */
+#undef HAVE_ICONV
+
+/* The system iconv requires a const char** second argument */
+#undef HAVE_ICONV_CONST
+
+/* Define to 1 if you have the <inttypes.h> header file. */
+#undef HAVE_INTTYPES_H
+
+/* libudev is available */
+#undef HAVE_LIBUDEV
+
+/* libusb is available */
+#undef HAVE_LIBUSB
+
+/* Define to 1 if you have the <libusb-1.0/libusb.h> header file. */
+#undef HAVE_LIBUSB_1_0_LIBUSB_H
+
+/* Define to 1 if you have the `libusb_get_port_numbers' function. */
+#undef HAVE_LIBUSB_GET_PORT_NUMBERS
+
+/* Define to 1 if you have the <libusb.h> header file. */
+#undef HAVE_LIBUSB_H
+
+/* Define to 1 if you have the `libusb_has_capability' function. */
+#undef HAVE_LIBUSB_HAS_CAPABILITY
+
+/* Define to 1 if you have the `libusb_strerror' function. */
+#undef HAVE_LIBUSB_STRERROR
+
+/* Define to 1 if you have the `localtime_r' function. */
+#undef HAVE_LOCALTIME_R
+
+/* Define to 1 if you have the <memory.h> header file. */
+#undef HAVE_MEMORY_H
+
+/* Define to 1 if you have the `newlocale' function. */
+#undef HAVE_NEWLOCALE
+
+/* Have GNU style pthread_setname_np(pthread_t thread, const char *name) */
+#undef HAVE_PTHREAD_SETNAME_NP_GNU
+
+/* Have MacOS style pthread_setname_np(const char *name) */
+#undef HAVE_PTHREAD_SETNAME_NP_MAC
+
+/* Define to 1 if you have the `pthread_set_name_np' function. */
+#undef HAVE_PTHREAD_SET_NAME_NP
+
+/* Define to 1 if you have the <stdint.h> header file. */
+#undef HAVE_STDINT_H
+
+/* Define to 1 if you have the <stdlib.h> header file. */
+#undef HAVE_STDLIB_H
+
+/* Define to 1 if you have the <strings.h> header file. */
+#undef HAVE_STRINGS_H
+
+/* Define to 1 if you have the <string.h> header file. */
+#undef HAVE_STRING_H
+
+/* Define to 1 if you have the `strtod_l' function. */
+#undef HAVE_STRTOD_L
+
+/* Define to 1 if you have the <sys/stat.h> header file. */
+#undef HAVE_SYS_STAT_H
+
+/* Define to 1 if you have the <sys/types.h> header file. */
+#undef HAVE_SYS_TYPES_H
+
+/* Define to 1 if you have the `timegm' function. */
+#undef HAVE_TIMEGM
+
+/* Define to 1 if you have the <tr1/unordered_map> header file. */
+#undef HAVE_TR1_UNORDERED_MAP
+
+/* Define to 1 if you have the `udev_device_get_sysattr_list_entry' function.
+   */
+#undef HAVE_UDEV_DEVICE_GET_SYSATTR_LIST_ENTRY
+
+/* Define to 1 if you have the `udev_device_get_tags_list_entry' function. */
+#undef HAVE_UDEV_DEVICE_GET_TAGS_LIST_ENTRY
+
+/* Define to 1 if you have the <unistd.h> header file. */
+#undef HAVE_UNISTD_H
+
+/* Define to 1 if you have the <unordered_map> header file. */
+#undef HAVE_UNORDERED_MAP
+
+/* Define to 1 if you have the `vasprintf' function. */
+#undef HAVE_VASPRINTF
+
+/* Define to 1 if you have the <xlocale.h> header file. */
+#undef HAVE_XLOCALE_H
+
+/* Define to 1 if you have the `_create_locale' function. */
+#undef HAVE__CREATE_LOCALE
+
+/* Define to 1 if you have the `_strtod_l' function. */
+#undef HAVE__STRTOD_L
+
+/* Define as const if the declaration of iconv() needs const. */
+#undef ICONV_CONST
+
+/* Define this with the path to the iconv utility */
+#undef ICONV_UTIL_PATH
+
+/* libusb header location */
+#undef LIBUSB_HEADER
+
+/* Define to the address where bug reports for this package should be sent. */
+#undef PACKAGE_BUGREPORT
+
+/* Define to the full name of this package. */
+#undef PACKAGE_NAME
+
+/* Define to the full name and version of this package. */
+#undef PACKAGE_STRING
+
+/* Define to the one symbol short name of this package. */
+#undef PACKAGE_TARNAME
+
+/* Define to the home page for this package. */
+#undef PACKAGE_URL
+
+/* Define to the version of this package. */
+#undef PACKAGE_VERSION
+
+/* Set the default to use for the seedd control socket */
+#undef SEEDD_CONTROL_SOCKET
+
+/* Define to 1 if you have the ANSI C header files. */
+#undef STDC_HEADERS
+
+/* Explicitly set the per-thread stack size in kB (if non-zero) */
+#undef THREAD_STACK_SIZE
+
+/* Enable Windows in 'UNICODE' mode */
+#undef UNICODE
+
+/* Select the MSW version to be compatible with */
+#undef WINVER
+
+/* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
+   significant byte first (like Motorola and SPARC, unlike Intel). */
+#if defined AC_APPLE_UNIVERSAL_BUILD
+# if defined __BIG_ENDIAN__
+#  define WORDS_BIGENDIAN 1
+# endif
+#else
+# ifndef WORDS_BIGENDIAN
+#  undef WORDS_BIGENDIAN
+# endif
+#endif
+
+/* Define to 1 if `lex' declares `yytext' as a `char *' by default, not a
+   `char[]'. */
+#undef YYTEXT_POINTER
+
+/* Build with libc buffer overflow checks enabled.
+   We need to guard this, because on some platforms the toolchain will already
+   define it as a builtin, and then emit warnings if we redefine it.  Ideally,
+   we'd undefine it here and then force our choice of strictness, but we can't
+   do that with autoheader because it sees that as a hook to rewrite.  So just
+   let people (yes, we're looking at you Gentoo) reap what they've sown if the
+   toolchain or the environment they use has already defined it. */
+#ifndef _FORTIFY_SOURCE
+# undef _FORTIFY_SOURCE
+#endif
+
+/* Include support for vasprintf et al. */
+#undef _GNU_SOURCE
+
+/* The MSW NT version to be compatible with */
+#undef _WIN32_WINNT
+
+#include <setup.h>

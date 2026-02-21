@@ -1,0 +1,12 @@
+include Makefile.acsubst.bit-babbler
+
+bbcheck_TYPE = EXECUTABLE
+bbcheck_LANGUAGE = C++
+bbcheck_OBJS = bbcheck.o
+bbcheck_VPATHS = %.cpp,$(srcdir)/src
+bbcheck_INSTALLDIR = $(bindir)
+bbcheck_CPPFLAGS = $(PTHREAD_CPPFLAGS) -I$(srcdir)/include $(USB_CPPFLAGS)
+bbcheck_LDFLAGS = $(PTHREAD_LDFLAGS) $(USB_LDFLAGS)
+bbcheck_LIBS = $(USB_LIBS) $(UDEV_LIBS)
+
+bbcheck_PE_LDFLAGS = -Wl,--stack,8388608

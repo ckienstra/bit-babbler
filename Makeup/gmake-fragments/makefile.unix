@@ -1,0 +1,793 @@
+# makeup build rules for posix platforms with the GNU toolchain.
+#
+# Copyright 2003 - 2021, Ron <ron@debian.org>
+#
+# This file is distributed under the terms of the GNU GPL version 2.
+#
+# As a special exception to the GPL, it may be distributed without
+# modification as a part of a program using a makeup generated build
+# system, under the same distribution terms as the program itself.
+
+
+# XXX
+# Should this whole file just collapse into makefile.target?
+# If anyone else needs common bits it can be selectively split out later.
+#
+# XXX
+
+
+# We keep this independent from MAKEUP_VERBOSE for now, since they both add
+# kind of orthogonal types of extra noise to the output.  MAKEUP_VERBOSE is
+# largely for debugging makeup itself, whereas this is more about debugging
+# the project that is being built.  You may want both, but maybe not always.
+ifeq ($(V),)
+  QUIET_CC	= @echo "  CC      $@";
+  QUIET_CXX	= @echo "  C++     $@";
+  QUIET_SYMVERS	= @echo "  SYMVERS $@";
+  QUIET_LD	= @echo "  LD      $@";
+  QUIET_AR	= @echo "  AR      $@";
+  QUIET_SWIG	= @echo "  SWIG    $@";
+  QUIET_LEX	= @echo "  LEX     $@";
+  QUIET_YACC	= @echo "  YACC    $*.tab.c";
+  QUIET_YACXX	= @echo "  YACC    $*.tab.cpp";
+  QUIET_WINDRES	= @echo "  WINDRES $@";
+
+# $(call QUIET_LN,_target,_linkname)
+  QUIET_LN	= @echo "  LN      $(2) -> $(1)"; $$(LN_S) -f $(1) $(2)
+
+else
+
+  QUIET_LN	= $$(LN_S) -f $(1) $(2)
+
+endif
+
+
+# Pattern rules for intermediate targets.
+# ------------------------------------------------------------------
+
+%.tab.cpp %.tab.hpp : %.ypp
+	$(QUIET_YACXX) $(YACC) $(YACCFLAGS) $< -o $*.tab.cpp
+
+%.yy.cpp : %.lpp %.tab.hpp
+	$(QUIET_LEX) $(LEX) $(LEXFLAGS) -o$@ $<
+
+%.tab.c %.tab.h : %.y
+	$(QUIET_YACC) $(YACC) $(YACCFLAGS) $< -o $*.tab.c
+
+%.yy.c : %.l %.tab.h
+	$(QUIET_LEX) $(LEX) $(LEXFLAGS) -o$@ $<
+
+%_res.o : %.rc
+	$(QUIET_WINDRES) $(WINDRES) -i $< -o $@ $(WINRCFLAGS)
+
+%.o : %.cpp
+	$(QUIET_CXX) $(CXX) -c -MMD $(PICFLAGS) $(CPPFLAGS) $(CXXFLAGS) -o $@ $<
+
+%.o : %.c
+	$(QUIET_CC) $(CC) -c -MMD $(PICFLAGS) $(CPPFLAGS) $(CFLAGS) -o $@ $<
+
+%.o : %.cc
+	$(QUIET_CXX) $(CXX) -c -MMD $(PICFLAGS) $(CPPFLAGS) $(CXXFLAGS) -o $@ $<
+
+
+# Keep intermediate targets for things like bison/flex/gettext
+# they'll only trigger a false remake if we don't.
+.SECONDARY:
+
+
+# Target file rules.
+# ------------------------------------------------------------------
+
+# The boilerplate macros here are divided into two preliminary
+# sets, MACRO_Function's and MACRO_Template's.  Macro _Function's
+# are aliases for a set of commands in a rule.  They are a make
+# friendly way to provide the equivalent of parametric shell
+# functions for common commands in makefile rules.
+#
+# Macro _Template's are parametric boilerplate for complete
+# makefile rules.  They must be passed to GNU make's $(eval)
+# function to be parsed as rules for manipulating a target.
+
+
+# $(call _EXTRA_FLAGS_Template,_target,_flags)
+# Used to add target, platform, and link-type specific flags to EXTRA$(_flags).
+# Supported configuration permutations (if passed 'target' and 'XFLAGS') are:
+#  target_XFLAGS
+#  target_{ELF,PE}_XFLAGS
+#  target_{static,shared}_XFLAGS
+#  target_{static,shared}_{ELF,PE}_XFLAGS
+#
+# With options set for each being applied to EXTRAXFLAGS in that order.
+define _EXTRA_FLAGS_Template
+  $$(strip $$($(1)_$(2)) \
+	   $$($(1)_$$(MAKEUP_HOST_ARCH)_$(2)) \
+	   $$(if $$($(1)_LINKAGE),$$($(1)_$$($(1)_LINKAGE)_$(2)) \
+				  $$($(1)_$$($(1)_LINKAGE)_$$(MAKEUP_HOST_ARCH)_$(2)), \
+				  $$($(1)_$$(MAKEUP_DEFAULT_LINKAGE)_$(2)) \
+				  $$($(1)_$$(MAKEUP_DEFAULT_LINKAGE)_$$(MAKEUP_HOST_ARCH)_$(2))) \
+  )
+endef
+
+# $(EXTRA_FLAGS_Template)
+# Defines target-specific variables common to all build platforms.
+# Usually used as a simple substitution variable inside another
+# template which defines the build rules to be used.
+define EXTRA_FLAGS_Template
+  $(1) : override EXTRACPPFLAGS  += $(call _EXTRA_FLAGS_Template,$(1),CPPFLAGS)
+  $(1) : override EXTRACFLAGS    += $(call _EXTRA_FLAGS_Template,$(1),CFLAGS)
+  $(1) : override EXTRACXXFLAGS  += $(call _EXTRA_FLAGS_Template,$(1),CXXFLAGS)
+  $(1) : override EXTRALDFLAGS   += $(call _EXTRA_FLAGS_Template,$(1),LDFLAGS)
+  $(1) : override EXTRAYACCFLAGS += $(call _EXTRA_FLAGS_Template,$(1),YACCFLAGS)
+  $(1) : override EXTRALEXFLAGS  += $(call _EXTRA_FLAGS_Template,$(1),LEXFLAGS)
+  $(1) : override EXTRALIBS      += $$(addprefix -l,$(call _EXTRA_FLAGS_Template,$(1),LIBS))
+
+  $(1) : $(1)_OBJS += $$($(1)_$$(MAKEUP_HOST_ARCH)_OBJS)
+  $(1) : $$($(1)_$$(MAKEUP_HOST_ARCH)_OBJS)
+endef
+
+# $(EXECUTABLE_LINKAGE_Template)
+# Enables static executable linkage if specified by target_LINKAGE or
+# by MAKEUP_DEFAULT_LINKAGE if the target_LINKAGE parameter is unset.
+define EXECUTABLE_LINKAGE_Template
+  $(1) : override EXTRALDFLAGS += $$(if $$(findstring static, $$($(1)_LINKAGE)), \
+                               -static,					\
+			       $$(if $$($(1)_LINKAGE),,			\
+			             $$(if $$(findstring static, $$(MAKEUP_DEFAULT_LINKAGE)), \
+				           -static)))
+endef
+
+
+C_LINKER = $(CC)
+C++_LINKER = $(CXX)
+
+# $(call LINK_ELF_EXECUTABLE_Template,_target,_linker)
+# Defines the makefile rules to link an executable _target for Linux.
+# Must be call'd with the name of the target executable and the _linker
+# to use (usually $(CC) or $(CXX) respectively for C and C++ targets).
+define LINK_ELF_EXECUTABLE_Template
+  $(EXTRA_FLAGS_Template)
+  $(EXECUTABLE_LINKAGE_Template)
+  $(1) : PICFLAGS=
+  $(1) : $$($(1)_OBJS)
+	$$(QUIET_LD) $(2) $$(strip $$(LDFLAGS) $$(EXTRALDFLAGS)) -o $$@ $$($(1)_OBJS) $$(EXTRALIBS) $$(LIBS)
+  -include $$($(1)_OBJS:.o=.d)
+endef
+
+# $(call LINK_PE_EXECUTABLE_Template,_target,_linker)
+# Defines the makefile rules to link an executable _target for mingw-cross.
+# Must be call'd with the name of the target executable and the _linker
+# to use (usually $(CC) or $(CXX) respectively for C and C++ targets).
+define LINK_PE_EXECUTABLE_Template
+  $(EXTRA_FLAGS_Template)
+  $(EXECUTABLE_LINKAGE_Template)
+  $(1) : PICFLAGS=
+  $(1) : $(1).exe
+
+  $(1).exe : $$($(1)_OBJS)
+	$$(QUIET_LD) $(2) $$(strip $$(LDFLAGS) $$(EXTRALDFLAGS)) -o $$@ $$($(1)_OBJS) $$(EXTRALIBS) $$(LIBS)
+  -include $$($(1)_OBJS:.o=.d)
+  .PHONY : $(1)
+endef
+
+
+# $(call LINK_staticLIBRARY_Template,_target,_linker)
+# Defines the makefile rules to link a static library _target.
+# Must be call'd with the base name of the target library and the _linker
+# to use (usually $(CC) or $(CXX) respectively for C and C++ targets).
+define LINK_staticLIBRARY_Template
+  $(EXTRA_FLAGS_Template)
+  $(1) : $(1).a
+
+  $(1).a : $$($(1)_OBJS)
+    ifneq ($$($(1)_OBJS),)
+	$$(QUIET_AR) $$(AR)	$$(ARFLAGS) $$@ $$($(1)_OBJS)
+    else
+	@echo " No $(1)_OBJS defined.  Nothing to be done."
+    endif
+
+  -include $$($(1)_OBJS:.o=.d)
+
+  .PHONY : $(1)
+endef
+
+
+# $(call LINK_sharedLIBRARY_Template,_target,_linker)
+# Defines the makefile rules to link a shared library _target.
+# Must be call'd with the base name of the target library and the _linker
+# to use (usually $(CC) or $(CXX) respectively for C and C++ targets).
+define LINK_sharedLIBRARY_Template
+  $(call LINK_$(MAKEUP_HOST_ARCH)_sharedLIBRARY_Template,$(1),$(2))
+endef
+
+# $(call LINK_ELF_sharedLIBRARY_Template,_target,_linker)
+# Defines the makefile rules to link a shared library _target for Linux.
+# Must be call'd with the base name of the target library and the _linker
+# to use (usually $(CC) or $(CXX) respectively for C and C++ targets).
+define LINK_ELF_sharedLIBRARY_Template
+  $(EXTRA_FLAGS_Template)
+  $(1) : $(1).so.$$($(1)_API_VERSION).$$($(1)_API_REVISION).$$($(1)_API_AGE)
+
+ ifneq ($$($(1)_SYM_VERSION),)
+  $(1).so.$$($(1)_API_VERSION).$$($(1)_API_REVISION).$$($(1)_API_AGE) :		\
+			SYMVERS_SCRIPT = -Wl,--version-script,$(1).symvers
+ endif
+
+  $(1).so.$$($(1)_API_VERSION).$$($(1)_API_REVISION).$$($(1)_API_AGE) : $$($(1)_OBJS) $(1).symvers
+    ifneq ($$($(1)_OBJS),)
+	$$(QUIET_LD) $(2) $$(PICFLAGS) $$(LDFLAGS) $$(EXTRALDFLAGS) -shared -o $$@	\
+		 -Wl,-soname,$(1).so.$$($(1)_API_VERSION) $$(SYMVERS_SCRIPT)		\
+		 $$($(1)_OBJS) $$(EXTRALIBS) $$(LIBS)
+
+	$(call QUIET_LN,$$@,$(1).so.$$($(1)_API_VERSION))
+	$(call QUIET_LN,$$@,$(1).so)
+    else
+	@echo " No $(1)_OBJS defined.  Nothing to be done."
+    endif
+
+  $(1).symvers : $$(MAKEUP_CONFIG_DIR)/target.$(1)
+    ifneq ($$($(1)_SYM_VERSION),)
+	$$(QUIET_SYMVERS) echo "$$($(1)_SYM_VERSION)" > $$@
+    else
+	@:
+    endif
+
+  -include $$($(1)_OBJS:.o=.d)
+
+  .PHONY : $(1)
+endef
+
+# $(call LINK_PE_sharedLIBRARY_Template,_target,_linker)
+# Defines the makefile rules to link a shared library _target for mingw-cross.
+# Must be call'd with the base name of the target library and the _linker
+# to use (usually $(CC) or $(CXX) respectively for C and C++ targets).
+define LINK_PE_sharedLIBRARY_Template
+  $(EXTRA_FLAGS_Template)
+  $(1) : $(1).dll
+
+  $(1).dll : $$($(1)_PE_OBJS)
+  $(1).dll : $$($(1)_OBJS)
+    ifneq ($$($(1)_OBJS),)
+	$$(QUIET_LD) $(2) $$(LDFLAGS) $$(EXTRALDFLAGS) -shared -o $$@		\
+		 -Wl,--out-implib,$$@.a						\
+		 $$($(1)_OBJS) $$(EXTRALIBS) $$(LIBS)
+    else
+	@echo " No $(1)_OBJS defined.  Nothing to be done."
+    endif
+
+  -include $$($(1)_OBJS:.o=.d)
+
+  .PHONY : $(1)
+endef
+
+
+# $(call LINK_PLUGIN_Template,_target,_linker,_dllext)
+# Defines the makefile rules to link a shared library plugin _target.
+# Must be call'd with the base name of the target plugin, the _linker
+# to use (usually $(CC) or $(CXX) respectively for C and C++ targets),
+# and the file extension for plugins (usually '.so' for ELF and '.dll'
+# for PE plugins).
+define LINK_PLUGIN_Template
+  $(EXTRA_FLAGS_Template)
+  $(1) : $(1)$(3)
+
+  $(1)$(3) : PICFLAGS=$(HOST_PICFLAGS)
+  $(1)$(3) : $$($(1)_OBJS)
+	$$(QUIET_LD) $(2) $$(PICFLAGS) $$(LDFLAGS) $$(EXTRALDFLAGS) -shared -o $$@	\
+			  $$($(1)_OBJS) $$(EXTRALIBS) $$(LIBS)
+
+  -include $$($(1)_OBJS:.o=.d)
+
+  .PHONY : $(1)
+endef
+
+
+
+# Binding and language specific parameters for SWIGWRAP_Template
+
+SWIGWRAP_perl_EXTRACPPFLAGS = -I$(shell perl -e 'use Config; print $$Config{archlib};')/CORE
+SWIGWRAP_python_EXTRACPPFLAGS = -I$(shell python -c "import sys;print sys.prefix + '/include/python' + sys.version[:3]")
+
+SWIGWRAP_C++_EXT    = cpp
+SWIGWRAP_C_EXT      = c
+SWIGWRAP_C++_PARSER = -c++
+SWIGWRAP_C_PARSER   =
+
+
+# $(call SWIGWRAP_Template,_target,_module,_binding,_language,_prefix)
+# Defines the common rules for creating swig modules.  The _target parameter
+# is a convenience and should normally equal $_binding-$_module.  The _module
+# is the name of the swig module to build, _binding is the language that the
+# module will support, _language is what it is written in (C or C++), the
+# optional _prefix will be prepended to the compiled module name, and is
+# currently only required for python's particular world view.
+define SWIGWRAP_Template
+  $(EXTRA_FLAGS_Template)
+  $(1) : $(3)/$(5)$(2)$$(DSOEXT)
+
+  $(1)_wrap.o : EXTRACPPFLAGS += $$(SWIGWRAP_$(3)_EXTRACPPFLAGS)
+  $(1)_wrap.o : $$(MAKEUP_SWIG_WRAP_DIR)/$(1)_wrap.$$(SWIGWRAP_$(4)_EXT)
+	$$(QUIET_CXX) $$(CXX) -c -MMD $$(PICFLAGS) $$(CPPFLAGS) $$(CXXFLAGS) -o $$@ $$<
+
+  $(3)/$(5)$(2)$$(DSOEXT) : $$($(1)_OBJS) $(1)_wrap.o
+	@mkdir -p $$(@D)
+	$$(QUIET_LD) $$($(4)_LINKER) $$(PICFLAGS) $$(LDFLAGS) $$(EXTRALDFLAGS) -shared -o $$@ \
+				     $$^ $$(EXTRALIBS) $$(LIBS)
+	$$(SWIGWRAP_$(1)_EXTRA)
+
+  $$(MAKEUP_SWIG_WRAP_DIR)/$(1)_wrap.$$(SWIGWRAP_$(4)_EXT) : $$(MAKEUP_SWIG_IF_DIR)/$(2).i
+	$(if $(SWIG),
+	  mkdir -p $$(@D)
+	  $$(QUIET_SWIG) $(SWIG) -$(3) $$(SWIGWRAP_$(4)_PARSER) -o $$@ $$<,
+	  @echo "*** swig is not installed, cannot regenerate $(1) wrappers")
+
+  $$(MAKEUP_SWIG_IF_DIR)/$(2).i : ;
+
+  -include $$($(1)_OBJS:.o=.d) $(1)_wrap.d
+
+  .PHONY : $(1)
+
+  clean_$(1) : $$(MAKEUP_SWIG_WRAP_DIR)/$(1)_wrap.$$(SWIGWRAP_$(4)_EXT)
+  clean_$(1) : CLEAN_$(1)_EXTRA = $$(if $$(wildcard $(3)),                    \
+                                        echo "\ \ \ \ Pruning path to: $(3)"; \
+                                        rmdir -p $(3) || true;)
+endef
+
+# $(call SWIG_perl_Template,_target,_module)
+# Defines all the rules required for a swig perl module _target.
+# The second parameter is merely passed as a convenience, it is not anticipated
+# this should be called with $_target != perl-$_module, or by anything other
+# than the SWIG_Template delegator.
+define SWIG_perl_Template
+  SWIGWRAP_$(1)_EXTRA = $$(LN_S) -f \
+			../$$(patsubst ./%,%,$$(MAKEUP_SWIG_WRAP_DIR))/$(2).pm \
+			perl
+  $(call SWIGWRAP_Template,$(1),$(2),perl,$$($(1)_LANGUAGE))
+
+  install_vendor_$(1) : PERLARCH = $(shell perl -e 'use Config; print $$Config{installvendorarch};')
+  install_vendor_$(1) : PERLLIB  = $(shell perl -e 'use Config; print $$Config{installvendorlib};')
+  install_vendor_$(1) : install_$(1)
+
+  install_site_$(1) : PERLARCH   = $(shell perl -e 'use Config; print $$Config{installsitearch};')
+  install_site_$(1) : PERLLIB    = $(shell perl -e 'use Config; print $$Config{installsitelib};')
+  install_site_$(1) : install_$(1)
+
+  install_$(1) :
+	@$(call INSTALL_DATA_Template_Function,$(2).pm,$$(DESTDIR)$$(PERLARCH),perl,perl interface)
+	@$(call INSTALL_DATA_Template_Function,$(2)$$(DSOEXT),$$(DESTDIR)$$(PERLLIB)/auto/$(2),perl,perl module)
+
+  install : $$(if $$(shell test "$$(prefix)" = "/usr" || echo "no"),	\
+		  install_site_$(1), install_vendor_$(1))
+
+  .PHONY : install_vendor_$(1) install_site_$(1) install_$(1) install
+
+  SWIGWRAP_CLEANUP_FILES = perl/$(2){$$(DSOEXT),.pm}	\
+			   $(1)_wrap.{o,d}
+  $(call CLEAN_Template,$(1),$$(SWIGWRAP_CLEANUP_FILES))
+endef
+
+# $(call SWIG_python_Template,_target,_module)
+# Defines all the rules required for a swig python module _target.
+# The second parameter is merely passed as a convenience, it is not anticipated
+# this should be called with $_target != python-$_module, or by anything other
+# than the SWIG_Template delegator.
+define SWIG_python_Template
+  SWIGWRAP_$(1)_EXTRA = $$(LN_S) -f \
+			../$$(patsubst ./%,%,$$(MAKEUP_SWIG_WRAP_DIR))/$(2).py \
+			python
+  $(call SWIGWRAP_Template,$(1),$(2),python,$$($(1)_LANGUAGE),_)
+
+  install_vendor_$(1) : PYARCH = /usr/lib/python$$(PYVERS)
+  install_vendor_$(1) : PYLIB  = /usr/lib/python$$(PYVERS)/lib-dynload
+  install_vendor_$(1) : install_$(1)
+
+  install_site_$(1) : PYARCH = /usr/local/lib/python$$(PYVERS)/site-packages
+  install_site_$(1) : PYLIB  = $$(PYARCH)
+  install_site_$(1) : install_$(1)
+
+  install_$(1) : PYVERS = $(shell python -c "import sys;print sys.version[:3]")
+  install_$(1) :
+	@$(call INSTALL_DATA_Template_Function,$(2).py,$$(DESTDIR)$$(PYARCH),python,python interface)
+	@$(call INSTALL_DATA_Template_Function,_$(2)$$(DSOEXT),$$(DESTDIR)$$(PYLIB),python,python module)
+
+  install : $$(if $$(shell test "$$(prefix)" = "/usr" || echo "no"),	\
+		  install_site_$(1), install_vendor_$(1))
+
+  .PHONY : install_vendor_$(1) install_site_$(1) install_$(1) install
+
+  SWIGWRAP_CLEANUP_FILES = python/_$(2)$$(DSOEXT)	\
+			   python/$(2).py{,c}		\
+			   $(1)_wrap.{o,d}
+  $(call CLEAN_Template,$(1),$$(SWIGWRAP_CLEANUP_FILES))
+endef
+
+
+
+# $(CREATE_INSTALLDIR_Function)
+# Simple helper alias for the INSTALL_ templates.  Used to create the
+# target's install directory if required.
+define CREATE_INSTALLDIR_Function
+  $(call CREATE_DIR_Function,$$(DESTDIR)$$($(1)_INSTALLDIR))
+endef
+
+
+# $(call INSTALL_BINARY_Template,_target[,_type][,_binary])
+# Defines makefile install rules for _target.  An optional (informative)
+# _type may be supplied for output to the user at install time.  The _binary
+# parameter is also optional, it is the name of the file that will be
+# installed, defaulting to _target if omitted.
+define INSTALL_BINARY_Template
+  install_$(1) :
+   ifneq ($$($(1)_INSTALLDIR),)
+	@set -e;							\
+	$(CREATE_INSTALLDIR_Function)					\
+	bin_name=$(3);							\
+	if [ -z "$(3)" ]; then						\
+	    bin_name=$(1);						\
+	fi;								\
+	echo "    Installing $(2): $$$${bin_name}";			\
+	$$(INSTALL_PROGRAM) $$$${bin_name} $$(DESTDIR)$$($(1)_INSTALLDIR)
+   else
+	@echo "$$@: No $(1)_INSTALLDIR defined, not installing"
+   endif
+
+  install : install_$(1)
+
+  .PHONY : install_$(1) install
+endef
+
+
+# $(INSTALL_HEADER_Function)
+# Simple helper alias for INSTALL_DATA_Template_Function, used by
+# library templates to install the header files for their target.
+define INSTALL_HEADER_Function
+
+  ifneq ($$($(1)_HEADERS),)
+    ifneq ($$($(1)_HEADER_SRCDIR),)
+      ifneq ($$($(1)_HEADER_INSTALLDIR),)
+	@$(call INSTALL_DATA_Template_Function,$$($(1)_HEADERS),$$(DESTDIR)$$($(1)_HEADER_INSTALLDIR),$$($(1)_HEADER_SRCDIR),header)
+      else
+	@echo "$$@: No $(1)_HEADER_INSTALLDIR defined, not installing headers";
+      endif
+    else
+	@echo "$$@: No $(1)_HEADER_SRCDIR defined, not installing headers";
+    endif
+  endif
+
+endef
+
+# $(INSTALL_configure_AC_FRAGMENT_Function)
+# Simple helper alias for INSTALL_DATA_Template_Function, used by library
+# templates to install any makeup configure ac-fragments for their target.
+# It is expected that a 'configure.$label' file will exist in the local
+# config dir for each $label listed in $target_AC_FRAGMENTS
+define INSTALL_configure_AC_FRAGMENT_Function
+  $(call INSTALL_DATA_Template_Function,$$(addprefix configure.,$$($(1)_AC_FRAGMENTS)),$$(DESTDIR)$$(datadir)/makeup/ac-fragments,$$(MAKEUP_CONFIG_DIR),ac-fragment)
+endef
+
+# $(INSTALL_acsubst_AC_FRAGMENT_Function)
+# Simple helper alias for INSTALL_DATA_Template_Function, used by library
+# templates to install any makeup acsubst ac-fragments for their target.
+# If an 'acsubst.$label' file exists in the local config dir for any entry
+# in $target_AC_FRAGMENTS it will also be installed.  This file is expected
+# to contain makefile substitution variables supported by configure.$label
+# and is not required to exist if there no substitution variable are needed.
+define INSTALL_acsubst_AC_FRAGMENT_Function
+  $(call INSTALL_DATA_Template_Function,$$(subst $$(MAKEUP_CONFIG_DIR)/,,$$(wildcard $$(addprefix $$(MAKEUP_CONFIG_DIR)/acsubst.,$$($(1)_AC_FRAGMENTS)))),$$(DESTDIR)$$(datadir)/makeup/ac-fragments,$$(MAKEUP_CONFIG_DIR),ac-fragment)
+endef
+
+# $(INSTALL_AC_M4_Function)
+# Simple helper alias for INSTALL_DATA_Template_Function, used by
+# library templates to install any autoconf .m4 files for their target.
+define INSTALL_AC_M4_Function
+  $(call INSTALL_DATA_Template_Function,$$(addsuffix .m4,$$($(1)_AC_M4)),$$(DESTDIR)$$(datadir)/aclocal,$$(MAKEUP_CONF_M4_DIR),ac.m4)
+endef
+
+
+# $(INSTALL_LIBRARY_Template)
+# Defines install rules for a library target.
+define INSTALL_LIBRARY_Template
+  $(INSTALL_$(MAKEUP_DEFAULT_LINKAGE)LIBRARY_Template)
+  install : need-setup-header
+
+  need-setup-header :
+	@touch "$$(top_builddir)/__need_setup"
+
+  .PHONY : install-lib_$(1) install-dev-arch_$(1) install-dev-indep_$(1)	\
+           install-lib install-dev install-dev-arch install-dev-indep install	\
+	   need-setup-header need-ldconfig
+endef
+
+
+# $(INSTALL_staticLIBRARY_Template)
+# Defines install rules for a static library target.
+define INSTALL_staticLIBRARY_Template
+  $(call INSTALL_BINARY_Template,$(1),static library,$(1).a)
+
+  install-dev_$(1) :
+	$(INSTALL_HEADER_Function)
+
+  install : install-dev
+  install-lib : ; @:
+  install-dev : install_$(1) install-dev-arch_$(1) install-dev-indep_$(1)
+  install-dev-arch : install_$(1) install-dev-arch_$(1)
+  install-dev-indep : install-dev-indep_$(1)
+endef
+
+
+# $(INSTALL_sharedLIBRARY_Template)
+# Defines install rules for a shared library target.
+define INSTALL_sharedLIBRARY_Template
+  $(INSTALL_$(MAKEUP_HOST_ARCH)_sharedLIBRARY_Template)
+
+  install : install-lib install-dev
+  install-lib : install-lib_$(1)
+  install-dev : install-dev-arch_$(1) install-dev-indep_$(1)
+  install-dev-arch : install-dev-arch_$(1)
+  install-dev-indep : install-dev-indep_$(1)
+endef
+
+# $(INSTALL_ELF_sharedLIBRARY_Template)
+# Defines makefile install rules for a Linux shared library target.
+define INSTALL_ELF_sharedLIBRARY_Template
+ ifneq ($$($(1)_INSTALLDIR),)
+  install : need-ldconfig
+
+  install-lib_$(1) :
+	@set -e;								\
+	if test x"$$($(1)_OBJS)" != x; then					\
+	  $(CREATE_INSTALLDIR_Function)						\
+	  echo "    Installing: $(1).so.$$($(1)_API_VERSION).$$($(1)_API_REVISION).$$($(1)_API_AGE)"; \
+	  $$(INSTALL_PROGRAM)							\
+	    $(1).so.$$($(1)_API_VERSION).$$($(1)_API_REVISION).$$($(1)_API_AGE) \
+	    $$(DESTDIR)$$($(1)_INSTALLDIR);					\
+	  echo "    Installing: $(1).so.$$($(1)_API_VERSION)";			\
+	  cp -d $(1).so.$$($(1)_API_VERSION) $$(DESTDIR)$$($(1)_INSTALLDIR);	\
+	fi
+
+  install-dev-arch_$(1) :
+	@set -e;								\
+	if test x"$$($(1)_OBJS)" != x; then					\
+	    $(CREATE_INSTALLDIR_Function)					\
+	    echo "    Installing: $(1).so";					\
+	    cp -d $(1).so $$(DESTDIR)$$($(1)_INSTALLDIR);			\
+	fi
+
+  need-ldconfig :
+	@[ -n "$$(DESTDIR)" ] || touch "$$(top_builddir)/__need_ldconfig"
+
+ else
+  install-lib_$(1)	\
+  install-dev-arch_$(1) :
+	@echo "$$@: No $(1)_INSTALLDIR defined, not installing"
+ endif
+
+  install-dev-indep_$(1) :
+	$(INSTALL_HEADER_Function)
+	@$(INSTALL_configure_AC_FRAGMENT_Function)
+	@$(INSTALL_acsubst_AC_FRAGMENT_Function)
+	@$(INSTALL_AC_M4_Function)
+endef
+
+# $(INSTALL_PE_sharedLIBRARY_Template)
+# Defines makefile install rules for a mingw-cross shared library target.
+define INSTALL_PE_sharedLIBRARY_Template
+ ifneq ($$($(1)_INSTALLDIR),)
+  install-lib_$(1) :
+	@set -e;								\
+	if test x"$$($(1)_OBJS)" != x; then					\
+	    $(CREATE_INSTALLDIR_Function)					\
+	    echo "    Installing: $(1).dll";					\
+	    $$(INSTALL_PROGRAM) $(1).dll $$(DESTDIR)$$($(1)_INSTALLDIR);	\
+	fi
+
+  install-dev-arch_$(1) :
+	@set -e;								\
+	if test x"$$($(1)_OBJS)" != x; then					\
+	    $(CREATE_INSTALLDIR_Function)					\
+	    echo "    Installing: $(1).dll.a";					\
+	    $$(INSTALL_PROGRAM) $(1).dll.a $$(DESTDIR)$$($(1)_INSTALLDIR);	\
+	fi
+ else
+  install-lib_$(1)	\
+  install-dev-arch_$(1) :
+	@echo "$$@: No $(1)_INSTALLDIR defined, not installing"
+ endif
+
+  install-dev-indep_$(1) :
+	$(INSTALL_HEADER_Function)
+	@$(INSTALL_configure_AC_FRAGMENT_Function)
+	@$(INSTALL_acsubst_AC_FRAGMENT_Function)
+	@$(INSTALL_AC_M4_Function)
+endef
+
+
+
+# $(CLEAN_staticLIBRARY_Template)
+# Computed helper alias for CLEAN_Template for static library targets.
+define CLEAN_staticLIBRARY_Template
+  $(call CLEAN_Template,$(1),$(1).a)
+endef
+
+# $(CLEAN_sharedLIBRARY_Template)
+# Computed helper alias for CLEAN_Template for shared library targets.
+define CLEAN_sharedLIBRARY_Template
+  $(call CLEAN_$(MAKEUP_HOST_ARCH)_sharedLIBRARY_Template,$(1))
+endef
+
+# $(CLEAN_ELF_sharedLIBRARY_Template)
+# Computed helper alias for CLEAN_Template for ELF shared library targets.
+define CLEAN_ELF_sharedLIBRARY_Template
+  CLEAN_ELF_sharedLIBRARY_SUFFIXES := {so*,symvers}
+  $(call CLEAN_Template,$(1),$(1).$$(CLEAN_ELF_sharedLIBRARY_SUFFIXES))
+endef
+
+# $(CLEAN_PE_sharedLIBRARY_Template)
+# Computed helper alias for CLEAN_Template for PE shared library targets.
+define CLEAN_PE_sharedLIBRARY_Template
+  $(call CLEAN_Template,$(1),$(1).dll*)
+endef
+
+# $(CLEAN_unknownLIBRARY_Template)
+# Computed helper alias for CLEAN_Template for unconfigured library targets.
+define CLEAN_unknownLIBRARY_Template
+  CLEAN_unknownLIBRARY_SUFFIXES := {a,dll*,so*,symvers}
+  $(call CLEAN_Template,$(1),$(1).$$(CLEAN_unknownLIBRARY_SUFFIXES))
+endef
+
+# $(call CLEAN_Template,_target[,_files])
+# Defines makefile clean rules for _target.  The _files parameter is an
+# optional (space-separated) list of filenames to remove in addition to
+# the standard build prerequisites.  It defaults to the value of _target
+# if omitted.
+#
+# Note: we eval ${target_files} so that it may contain (and correctly
+#       evaluate) shell brace expansions.  eg. libfoo.{a,so*,dll*}
+define CLEAN_Template
+  clean_$(1) : SHELL      = bash
+  clean_$(1) : BISON_SRC := $$(patsubst %.tab.o,%.y,$$(filter %.tab.o,$$($(1)_OBJS)))
+  clean_$(1) : FLEX_SRC  := $$(patsubst %.yy.o,%.l,$$(filter %.yy.o,$$($(1)_OBJS)))
+  clean_$(1) : $(1)_OBJS += $$($(1)_$$(MAKEUP_HOST_ARCH)_OBJS)
+  clean_$(1) :
+	@target_files="$(2)";						\
+	if [ -z "$(2)" ]; then						\
+	    target_files=$(1);						\
+	fi;								\
+	for f in $$($(1)_OBJS) $$($(1)_OBJS:.o=.d) core			\
+		 $$(BISON_SRC:.y=.tab.c) $$(BISON_SRC:.y=.tab.h)	\
+		 $$(BISON_SRC:.y=.tab.cpp) $$(BISON_SRC:.y=.tab.hpp)	\
+		 $$(BISON_SRC:.y=.tab.d)				\
+		 $$(FLEX_SRC:.l=.yy.c) $$(FLEX_SRC:.l=.yy.cpp)		\
+		 $$(FLEX_SRC:.l=.yy.d)					\
+		 $$($(1)_EXTRACLEAN);					\
+	do								\
+	    if [ -e "$$$$f" ]; then					\
+		target_files="$$$${target_files} $$$$f";		\
+	    fi;								\
+	done;								\
+	echo "    Removing: $$$${target_files}";			\
+	eval $$(RM) $$$${target_files}
+	@eval $$(CLEAN_$(1)_EXTRA)
+
+  allclean_$(1) : clean_$(1)
+   ifneq ($$($(1)_TARGET_DEPS),)
+	@$(MAKE) $(MAKEUP_EXTRA_DEBUG) --no-print-directory		\
+		 $$(foreach t,$$($(1)_TARGET_DEPS),clean-$$(t))
+   else
+	@
+   endif
+
+  clean : clean_$(1)
+  allclean : allclean_$(1)
+
+  .PHONY : clean_$(1) clean allclean
+endef
+
+
+
+# $(call EXECUTABLE_Template,_target)
+# Defines all the rules required for an executable _target.
+define EXECUTABLE_Template
+  $(call LINK_$(MAKEUP_HOST_ARCH)_EXECUTABLE_Template,$(1),$$($$($(1)_LANGUAGE)_LINKER))
+  $(call INSTALL_BINARY_Template,$(1),executable,$(1)$$(EXEEXT))
+  $(call CLEAN_Template,$(1),$(1)$$(EXEEXT))
+endef
+
+# $(call LIBRARY_Template,_target)
+# Defines all the rules required for a library _target.
+define LIBRARY_Template
+  $(call LINK_$(MAKEUP_DEFAULT_LINKAGE)LIBRARY_Template,$(1),$$($$($(1)_LANGUAGE)_LINKER))
+  $(INSTALL_LIBRARY_Template)
+  $(CLEAN_$(MAKEUP_DEFAULT_LINKAGE)LIBRARY_Template)
+endef
+
+# $(call PLUGIN_Template,_target)
+# Defines all the rules required for a plugin _target.
+define PLUGIN_Template
+  $(call LINK_PLUGIN_Template,$(1),$$($$($(1)_LANGUAGE)_LINKER),$$(DSOEXT))
+  $(call INSTALL_BINARY_Template,$(1),plugin,$(1)$$(DSOEXT))
+  $(call CLEAN_Template,$(1),$(1)$$(DSOEXT))
+endef
+
+# $(call DATA_Template,_target)
+# Defines all the rules required for a 'data' _target.
+define DATA_Template
+  $(1) : ; @:
+
+  install_$(1) :
+   ifneq ($$($(1)_DATA_FILES),)
+    ifneq ($$($(1)_DATA_SRCDIR),)
+      ifneq ($$($(1)_DATA_INSTALLDIR),)
+	@$(call INSTALL_DATA_Template_Function,$$($(1)_DATA_FILES),$$(DESTDIR)$$($(1)_DATA_INSTALLDIR),$$($(1)_DATA_SRCDIR),$(1))
+      else
+	@echo "$$@: No $(1)_DATA_INSTALLDIR defined, not installing"
+      endif
+    else
+	@echo "$$@: No $(1)_DATA_SRCDIR defined, not installing"
+    endif
+   endif
+
+  install : install_$(1)
+
+  clean_$(1) : ; @:
+  clean : clean_$(1)
+
+  .PHONY : $(1) install_$(1) clean_$(1) install clean
+endef
+
+# $(call SWIG_Template,_target)
+# Defines all the rules required for a swig module _target.
+# Such targets are of the form $binding-$modulename, eg. perl-foo, python-bar
+# This macro simply delegates to the binding language specific rules for _target
+define SWIG_Template
+  # This comment just ensures this macro never tests empty when it is defined
+  $(eval SWIG_WRAPPER_TYPE = $(shell t="$(1)"; echo "$${t%%-*}"))
+  $(if $(1), $(if $(SWIG_$(SWIG_WRAPPER_TYPE)_Template),,	\
+	     $(error Unknown SWIG target type '$(SWIG_WRAPPER_TYPE)')))
+  $(call SWIG_$(SWIG_WRAPPER_TYPE)_Template,$(1),$(shell t="$(1)"; echo "$${t#*-}"))
+endef
+
+# $(call KBUILD_MAKE_Function,_target,_rule)
+# Convenience helper for KBUILD_Template to check if the target dir exists
+# before attempting to invoke a kbuild rule for it.
+define KBUILD_MAKE_Function
+  $(if $(KBUILD_TARGET_DIR_$(1)),$(MAKE) -C $(KBUILD_TARGET_DIR_$(1)) $(2), \
+       @echo "No dir for $(1) target $(2)")
+endef
+
+# $(call KBUILD_Template,_target)
+# Defines the rules for building a kernel module using kbuild.  Unfortunately
+# kbuild cannot currently support the concept of a separate build dir, so these
+# builds will always result in the target module and its precursors ending up
+# in the source dirs.  (it has a O= option, but that works about as well as it
+# is documented, so I'm not optimistic this will be fixed soon)
+#
+# The $(MAKEUP_CONFIG_DIR)/target.$(_target) file should contain the required
+# kbuild definitions as well as the makup target description.  Only $target_DIR
+# is supported for this type.  It is required to indicate the subdir which
+# contains the kernel module source.
+define KBUILD_Template
+  $(GET_KBUILD_TARGETS_Template)
+
+  $(1) : $(KBUILD_TARGET_DIR_$(1))/Makefile
+	+$(call KBUILD_MAKE_Function,$(1))
+
+  $(KBUILD_TARGET_DIR_$(1))/Makefile : $$(MAKEUP_CONFIG_DIR)/target.$(1)    \
+				       $$(MAKEUP_GMAKE_DIR)/makefile.kbuild \
+				       $$(top_builddir)/config.status
+	$(if $(KBUILD_TARGET_DIR_$(1)),					\
+	     @echo -n "  * Updating $$@... " &&				\
+	      cd $$(top_builddir) && ./config.status $$@,		\
+	     @echo "No dir for $(1), not updating Makefile")
+
+  install_$(1) :
+	+$(call KBUILD_MAKE_Function,$(1),install)
+
+  clean_$(1) :
+	-+$(call KBUILD_MAKE_Function,$(1),clean)
+
+  install : install_$(1)
+  clean : clean_$(1)
+
+  .PHONY : $(1) install_$(1) clean_$(1) install clean
+endef
+

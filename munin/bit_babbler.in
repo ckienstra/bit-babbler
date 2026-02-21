@@ -1,0 +1,1141 @@
+#!/usr/bin/perl -w
+
+# This file is distributed as part of the bit-babbler package.
+# Copyright 2014 - 2021,  Ron <ron@debian.org>
+
+# Munin magic markers
+#%# family=auto
+#%# capabilities=autoconf
+
+use strict;
+
+use IO::Socket;
+use JSON::XS;
+use Munin::Plugin;
+
+my $control_socket = $ENV{'control_socket'} || "@SEEDD_CONTROL_SOCKET@";
+my $json;
+
+
+sub cmd_request($)
+{ #{{{
+
+    my $request = shift;
+
+    my $sock = IO::Socket::UNIX->new(
+        Type => SOCK_STREAM,
+        Peer => $control_socket
+    ) or die "Could not create socket: $!\n";
+
+    my $max_chunk_size = 65536;
+    my $data;
+    my $msg;
+    my $flags;
+
+    $sock->send('"' . $request . "\"\0") or die "Failed to send '$request' request: $!\n";
+    do {
+        $sock->recv($data,$max_chunk_size,$flags) or die "Failed to read reply: $!\n";
+        $msg .= $data;
+    }
+    while( $data !~ /\0$/ );
+    chop($msg);
+
+    $json = eval { JSON::XS->new->decode($msg) };
+    die "JSON decode failed: $@: $msg\n" if $@;
+
+    if ($json->[0] ne $request) {
+        die "Unrecognised reply: $json->[0]\n";
+    }
+
+} #}}}
+
+sub get_ids()
+{
+    cmd_request("GetIDs");
+}
+
+sub get_stats()
+{
+    cmd_request("ReportStats");
+}
+
+sub unique_list(@) {
+    my %h;
+    map { $h{$_}++ ? () : $_ } @_;
+}
+
+
+sub report_bitrate_config(@)
+{ #{{{
+
+    print "multigraph bb_bitrate\n";
+    print "graph_title BitBabbler bytes output\n";
+    print "graph_vlabel Bytes/second\n";
+    print "graph_category system\n";
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "${f}_qa_passed.label $_\n";
+        print "${f}_qa_passed.type COUNTER\n";
+        print "${f}_qa_passed.max 1000000\n";
+        print "${f}_qa_passed.info Good entropy output\n";
+    }
+
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_bitrate.output_$f\n";
+        print "graph_title BitBabbler $_ bytes output\n";
+        print "graph_vlabel Bytes/second\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the demand for entropy (and the rate at "
+            . "which it is able to be delivered). The discarded rate is entropy which "
+            . "was read from the device, but which was not used because either the "
+            . "QA checks are currently failing, or they are still confirming whether "
+            . "a failure was really a transient anomaly or not.  It is not unusual to "
+            . "have some entropy discarded at first start up, since the QA checking "
+            . "puts the initial onus on the source to prove it is good, and will not "
+            . "pass entropy from it until it does.  The passed rate includes entropy "
+            . "that is output even when none is being consumed, which is used to keep "
+            . "the pools constantly fresh.\n";
+
+        print "${f}_qa_passed.label Passed\n";
+        print "${f}_qa_passed.type COUNTER\n";
+        print "${f}_qa_passed.max 1000000\n";
+        print "${f}_qa_passed.info Good entropy output\n";
+
+        print "${f}_qa_unpassed.label Discarded\n";
+        print "${f}_qa_unpassed.type COUNTER\n";
+        print "${f}_qa_unpassed.max 1000000\n";
+        print "${f}_qa_unpassed.warning 1\n";
+        print "${f}_qa_unpassed.info Discarded entropy\n";
+    }
+
+} #}}}
+
+sub report_bitrate_values(@)
+{ #{{{
+
+    print "multigraph bb_bitrate\n";
+    for (@_) {
+        my $f  = clean_fieldname($_);
+        my $qa = $json->[2]{$_}{'QA'} if exists $json->[2]{$_};
+
+        print "${f}_qa_passed.value " . ($qa ? $qa->{'BytesPassed'} : "U") . "\n";
+    }
+
+    for (@_) {
+        my $f  = clean_fieldname($_);
+        my $qa = $json->[2]{$_}{'QA'} if exists $json->[2]{$_};
+
+        print "multigraph bb_bitrate.output_$f\n";
+
+        if (defined $qa) {
+            print "${f}_qa_passed.value $qa->{'BytesPassed'}\n";
+            print "${f}_qa_unpassed.value " . ($qa->{'BytesAnalysed'} - $qa->{'BytesPassed'}) . "\n";
+        } else {
+            print "${f}_qa_passed.value U\n";
+            print "${f}_qa_unpassed.value U\n";
+        }
+    }
+
+} #}}}
+
+
+sub report_ent_config(@)
+{ #{{{
+
+    # Check if the Ent test long statistics are expected to have converged on
+    # their threshold limits.  We don't want to bark warnings here until then.
+    #
+    # This is a bit ugly, it means we fetch the stats used to output the values
+    # during both the config and the fetch phases.  We could cache them during
+    # fetch, but that's backward and the first config run will potentially read
+    # stale data from the cache (triggering a burst of false warnings, which is
+    # exactly what this extra complication is here to solve ...).  We could
+    # instead cache them here, and read that during fetch -- but it's not clear
+    # that's actually simpler or in any way more efficient than just querying
+    # for them twice ...  We could also add a simpler request to the protocol,
+    # that only fetches the sample counts we need to inspect here, but that may
+    # be overengineering our way around this too.
+    #
+    # What we do here then, is check if Ent::Limits::long_minsamples has been
+    # reached yet for each device we are graphing, and flag each of them that
+    # have.  We then use that to decide whether to include the warning limits
+    # in the config for each graph.  This avoids the situation where devices
+    # that aren't having a lot of data read from them, and which may take many
+    # hours, or even days, to reach the long test convergence thresholds, will
+    # be reporting 'false' warnings each time the process is restarted until
+    # that finally happens.  With this, the warnings will only trigger in the
+    # cases where the test is considered to have actually failed and the output
+    # from the device is being suppressed.  Which is the only case we really
+    # want to alert the admin about.  Crying wolf when the test is not actually
+    # valid yet will just lead someone to ignore a real failure - and relaxing
+    # the thresholds for warnings here to avoid that would mean a real failure
+    # might go unnoticed for a longer period than would be ideal, or be harder
+    # to pinpoint the real cause when some other metric alerts them to it.
+    #
+    # So it's better to be a little bit ugly here, than a lot ugly for users.
+    # This could be a lot easier if munin didn't split each request into two
+    # separate phases that both occur for every poll.
+    my %warn;
+
+    get_stats();
+
+    for (keys %{$json->[2]}) {
+        my $f       = clean_fieldname($_);
+        my $ent8    = $json->[2]{$_}{'Ent8'};
+        my $ent16   = $json->[2]{$_}{'Ent16'};
+
+        $warn{$f}{'Ent8'} = 1
+            if (defined $ent8 && $ent8->{'Long'}{'Samples'} > 250000000);
+
+        $warn{$f}{'Ent16'} = 1
+            if (defined $ent16 && $ent16->{'Long'}{'Samples'} > 500000000);
+    }
+
+
+
+    print "multigraph bb_ent\n";
+    print "graph_title BitBabbler Ent tests\n";
+    print "graph_args --alt-autoscale --alt-y-grid\n";
+    print "graph_vlabel Shannon entropy (per 8 bits)\n";
+    print "graph_scale no\n";
+    print "graph_printf %9.6lf\n";
+    print "graph_category system\n";
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "${f}_ent_entropy_short.label $_ short term\n";
+        print "${f}_ent_entropy_short.info Short term entropy estimate\n";
+
+        print "${f}_ent_entropy_long.label $_ long term\n";
+        print "${f}_ent_entropy_long.info Long term entropy estimate\n";
+    }
+
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.chisq16_$f\n";
+        print "graph_title BitBabbler $_ Chi^2 distribution (16-bit)\n";
+        print "graph_args --alt-autoscale"
+            . " 'HRULE:66659.52#ffaaaa:Random will exceed 66659.52 less than 0.1% of the time'"
+            . " 'COMMENT: \\j'"
+            . " 'HRULE:64421.97#ffaaaa:Random will exceed 64421.97 more than 99.9% of the time'"
+            . " 'COMMENT: \\j'"
+            . "\n";
+        print "graph_vlabel Chi^2\n";
+        print "graph_scale no\n";
+        print "graph_printf %8.2lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the results of Pearson's Chi-squared test "
+            . "for short and long sequences of 16-bit samples.  The short term result is "
+            . "a test of the 100 million most recently generated samples.  The long term "
+            . "result is computed over all samples generated since the process being "
+            . "queried began.<br><br>"
+            . "A statistically random sequence would be expected to exceed 64421.97 99.9% "
+            . "of the time, 64695.73 99% of the time, and 64940.64 95% of the time."
+            . "  A Chi-squared statistic smaller than this indicates the sample values "
+            . "were more uniformly distributed than would normally be expected from a "
+            . "random selection.<br><br>"
+            . "At the opposite end of expectation, it is likely to exceed 66131.63 only "
+            . "5% of the time, 66380.17 1% of the time, and 66659.52 just 0.1% of the time."
+            . "  A Chi-squared statistic larger than this indicates the sample values "
+            . "were less uniformly distributed than would normally be expected from a "
+            . "random selection.<br><br>"
+            . "A sustained rate of results outside of these bounds for the short term "
+            . "test would indicate a systemic failure.  Since the long term test is "
+            . "continually accumulating upon the same set of data, it may be expected "
+            . "to take fairly long duration excursions out to the extreme limits of "
+            . "probability before eventually returning to a more expected range.\n";
+
+        # Roughly 1 in 100 million chance of passing the warning thresholds
+        # Roughly buckley's of passing the critical thresholds in normal operation
+        print "${f}_ent16_chisq_short.label Short term\n";
+        print "${f}_ent16_chisq_short.line "
+            . "64940.644:cccccc:Random will exceed 64940 more than 95% of the time\n";
+        print "${f}_ent16_chisq_short.warning 321:67459\n";
+        print "${f}_ent16_chisq_short.critical 35:70000\n";
+        print "${f}_ent16_chisq_short.info Short term Chi^2 distribution\n";
+
+        print "${f}_ent16_chisq_long.label Long term\n";
+        print "${f}_ent16_chisq_long.line "
+            . "66131.632:cccccc:Random will exceed 66131 less than 5% of the time\n";
+        print "${f}_ent16_chisq_long.warning 63823:67265\n";
+        print "${f}_ent16_chisq_long.critical 35:70000\n";
+        print "${f}_ent16_chisq_long.info Long term Chi^2 distribution\n";
+    }
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.chisq_$f\n";
+        print "graph_title BitBabbler $_ Chi^2 distribution (8-bit)\n";
+        print "graph_args --alt-autoscale"
+            . " 'HRULE:330.523#ffaaaa:Random will exceed 330.523 less than 0.1% of the time'"
+            . " 'COMMENT: \\j'"
+            . " 'HRULE:190.869#ffaaaa:Random will exceed 190.869 more than 99.9% of the time'"
+            . " 'COMMENT: \\j'"
+            . "\n";
+        print "graph_vlabel Chi^2\n";
+        print "graph_scale no\n";
+        print "graph_printf %8.2lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the results of Pearson's Chi-squared test "
+            . "for short and long sequences of 8-bit samples.  The short term result is "
+            . "a test of the 500,000 most recently generated samples.  The long term "
+            . "result is computed over all samples generated since the process being "
+            . "queried began.<br><br>"
+            . "A statistically random sequence would be expected to exceed 190.869 99.9% "
+            . "of the time, 205.421 99% of the time, and 219.025 95% of the time."
+            . "  A Chi-squared statistic smaller than this indicates the sample values "
+            . "were more uniformly distributed than would normally be expected from a "
+            . "random selection.<br><br>"
+            . "At the opposite end of expectation, it is likely to exceed 293.248 only "
+            . "5% of the time, 310.457 1% of the time, and 330.523 just 0.1% of the time."
+            . "  A Chi-squared statistic larger than this indicates the sample values "
+            . "were less uniformly distributed than would normally be expected from a "
+            . "random selection.<br><br>"
+            . "A sustained rate of results outside of these bounds for the short term "
+            . "test would indicate a systemic failure.  Since the long term test is "
+            . "continually accumulating upon the same set of data, it may be expected "
+            . "to take fairly long duration excursions out to the extreme limits of "
+            . "probability before eventually returning to a more expected range.\n";
+
+        # Roughly 1 in 100 million chance of passing the warning thresholds
+        # Roughly buckley's of passing the critical thresholds in normal operation
+        print "${f}_ent_chisq_short.label Short term\n";
+        print "${f}_ent_chisq_short.line "
+            . "219.025:cccccc:Random will exceed 219.025 more than 95% of the time\n";
+        print "${f}_ent_chisq_short.warning 147:400\n";
+        print "${f}_ent_chisq_short.critical 32:500\n";
+        print "${f}_ent_chisq_short.info Short term Chi^2 distribution\n";
+
+        print "${f}_ent_chisq_long.label Long term\n";
+        print "${f}_ent_chisq_long.line "
+            . "293.248:cccccc:Random will exceed 293.248 less than 5% of the time\n";
+        print "${f}_ent_chisq_long.warning 161:377\n";
+        print "${f}_ent_chisq_long.critical 32:500\n";
+        print "${f}_ent_chisq_long.info Long term Chi^2 distribution\n";
+    }
+
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.entropy16_$f\n";
+        print "graph_title BitBabbler $_ estimated entropy (16-bit)\n";
+        print "graph_args --alt-autoscale --alt-y-grid\n";
+        print "graph_vlabel Entropy (per 16 bits)\n";
+        print "graph_scale no\n";
+        print "graph_printf %9.6lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the calculated Shannon and min entropy "
+            . "for a short term sequence of the most recent 100 million samples, and "
+            . "over the long term of all samples generated since the process being "
+            . "queried began.  The Shannon entropy is based on the number of times "
+            . "that each possible sequence of 16 bits occurred.  The min-entropy is "
+            . "a more conservative estimate that is based only on the number of "
+            . "times that the most frequent sample value was seen.<br><br>"
+            . "Note that when this analysis is performed on a 32-bit machine, the "
+            . "long term sample count will 'wrap around' well before the results "
+            . "can converge on their maximum expected value, and that when this does "
+            . "occur a small 'sawtooth' dip is expected to be seen in the results.\n";
+
+        print "${f}_ent16_entropy_short.label Shannon entropy short term\n";
+        print "${f}_ent16_entropy_short.warning 15.9995:\n";
+        print "${f}_ent16_entropy_short.critical 15.8:\n";
+        print "${f}_ent16_entropy_short.info Short term Shannon entropy estimate\n";
+
+        print "${f}_ent16_entropy_long.label Shannon entropy long term\n";
+        if (defined $warn{$f}{'Ent16'}) {
+            print "${f}_ent16_entropy_long.warning 15.9999:\n";
+            print "${f}_ent16_entropy_long.critical 15.99:\n";
+        }
+        print "${f}_ent16_entropy_long.info Long term Shannon entropy estimate\n";
+
+        print "${f}_ent16_minentropy_short.label Min-entropy short term\n";
+        print "${f}_ent16_minentropy_short.warning 15.708:\n";
+        print "${f}_ent16_minentropy_short.critical 15.7:\n";
+        print "${f}_ent16_minentropy_short.info Short term min-entropy estimate\n";
+
+        print "${f}_ent16_minentropy_long.label Min-entropy long term\n";
+        if (defined $warn{$f}{'Ent16'}) {
+            print "${f}_ent16_minentropy_long.warning 15.893:\n";
+            print "${f}_ent16_minentropy_long.critical 15.8:\n";
+        }
+        print "${f}_ent16_minentropy_long.info Long term min-entropy estimate\n";
+    }
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.entropy_$f\n";
+        print "graph_title BitBabbler $_ estimated entropy (8-bit)\n";
+        print "graph_args --alt-autoscale --alt-y-grid\n";
+        print "graph_vlabel Entropy (per 8 bits)\n";
+        print "graph_scale no\n";
+        print "graph_printf %9.6lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the calculated Shannon and min entropy "
+            . "for a short term sequence of the most recent 500,000 samples, and "
+            . "over the long term of all samples generated since the process being "
+            . "queried began.  The Shannon entropy is based on the number of times "
+            . "that each possible sequence of 8 bits occurred.  The min-entropy is "
+            . "a more conservative estimate that is based only on the number of "
+            . "times that the most frequent sample value was seen.<br><br>"
+            . "Note that when this analysis is performed on a 32-bit machine, the "
+            . "long term sample count will 'wrap around' well before the min entropy "
+            . "results can converge on their maximum expected value, and that when "
+            . "this does occur a tiny 'sawtooth' dip is expected to be seen in the "
+            . "results.\n";
+
+        print "${f}_ent_entropy_short.label Shannon entropy short term\n";
+        print "${f}_ent_entropy_short.warning 7.999:\n";
+        print "${f}_ent_entropy_short.critical 7.8:\n";
+        print "${f}_ent_entropy_short.info Short term Shannon entropy estimate\n";
+
+        print "${f}_ent_entropy_long.label Shannon entropy long term\n";
+        if (defined $warn{$f}{'Ent8'}) {
+            print "${f}_ent_entropy_long.warning 7.999999:\n";
+            print "${f}_ent_entropy_long.critical 7.999:\n";
+        }
+        print "${f}_ent_entropy_long.info Long term Shannon entropy estimate\n";
+
+        print "${f}_ent_minentropy_short.label Min-entropy short term\n";
+        print "${f}_ent_minentropy_short.warning 7.73:\n";
+        print "${f}_ent_minentropy_short.critical 7.7:\n";
+        print "${f}_ent_minentropy_short.info Short term min-entropy estimate\n";
+
+        print "${f}_ent_minentropy_long.label Min-entropy long term\n";
+        if (defined $warn{$f}{'Ent8'}) {
+            print "${f}_ent_minentropy_long.warning 7.99:\n";
+            print "${f}_ent_minentropy_long.critical 7.9:\n";
+        }
+        print "${f}_ent_minentropy_long.info Long term min-entropy estimate\n";
+    }
+
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.mean16_$f\n";
+        print "graph_title BitBabbler $_ mean value (16-bit)\n";
+        if (defined $warn{$f}{'Ent16'}) {
+            print "graph_args --alt-autoscale --alt-y-grid\n";
+        } else {
+            print "graph_args --alt-autoscale --alt-y-grid"
+                . " HRULE:32765.63#bbbbff"
+                . " HRULE:32769.37#bbbbff"
+                . "\n";
+        }
+        print "graph_vlabel Mean of all samples\n";
+        print "graph_scale no\n";
+        print "graph_printf %10.6lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows a simple arithmetic mean of 16-bit samples "
+            . "over short and long term sequences.  The short term result is a test "
+            . "of the 100 million most recently generated samples.  The long term result "
+            . "is calculated over all samples generated since the process being queried "
+            . "began.  An unbiased sequence would be expected to converge on 32767.5 over "
+            . "the long term, but the 16-bit mean can require a large number of samples "
+            . "before it does.\n";
+
+        print "${f}_ent16_mean_short.label Short term\n";
+        print "${f}_ent16_mean_short.line 32767.5:bbbbbb\n";
+        print "${f}_ent16_mean_short.warning 32759.81:32775.19\n";
+        print "${f}_ent16_mean_short.critical 32757.5:32777.5\n";
+        print "${f}_ent16_mean_short.info Short term mean\n";
+
+        print "${f}_ent16_mean_long.label Long term\n";
+        if (defined $warn{$f}{'Ent16'}) {
+            print "${f}_ent16_mean_long.warning 32765.63:32769.37\n";
+            print "${f}_ent16_mean_long.critical 32762.5:32772.5\n";
+        }
+        print "${f}_ent16_mean_long.info Long term mean\n";
+    }
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.mean_$f\n";
+        print "graph_title BitBabbler $_ mean value (8-bit)\n";
+        if (defined $warn{$f}{'Ent8'}) {
+            print "graph_args --alt-autoscale --alt-y-grid\n";
+        } else {
+            print "graph_args --alt-autoscale --alt-y-grid"
+                . " HRULE:127.481#bbbbff"
+                . " HRULE:127.519#bbbbff"
+                . "\n";
+        }
+        print "graph_vlabel Mean of all samples\n";
+        print "graph_scale no\n";
+        print "graph_printf %10.6lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows a simple arithmetic mean of 8-bit samples "
+            . "over short and long term sequences.  The short term result is a test "
+            . "of the 500,000 most recently generated samples.  The long term result "
+            . "is calculated over all samples generated since the process being queried "
+            . "began.  An unbiased sequence would be expected to converge on 127.5 over "
+            . "the long term.\n";
+
+        print "${f}_ent_mean_short.label Short term\n";
+        print "${f}_ent_mean_short.warning 126.92:128.08\n";
+        print "${f}_ent_mean_short.critical 126.5:128.5\n";
+        print "${f}_ent_mean_short.info Short term mean\n";
+
+        print "${f}_ent_mean_long.label Long term\n";
+        if (defined $warn{$f}{'Ent8'}) {
+            print "${f}_ent_mean_long.warning 127.481:127.519\n";
+            print "${f}_ent_mean_long.critical 127.0:128.0\n";
+        }
+        print "${f}_ent_mean_long.info Long term mean\n";
+    }
+
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.pi_error_$f\n";
+        print "graph_title BitBabbler $_ Monte Carlo test (24-bit)\n";
+        if (defined $warn{$f}{'Ent8'}) {
+            print "graph_args --base 1000\n";   # Don't inherit parent args
+        } else {
+            print "graph_args --base 1000 HRULE:-0.03#bbbbff HRULE:0.03#bbbbff\n";
+        }
+        print "graph_vlabel % error calculating Pi\n";
+        print "graph_scale no\n";
+        print "graph_printf %6.4lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the error in computing the value of "
+            . "Pi using the 'Monte Carlo Method'.  Consecutive sequences of "
+            . "24 bits are taken as X and Y coordinates inside a square.  "
+            . "Since a circle inscribed in that square occupies Pi/4 of its "
+            . "area, then a uniformly distributed set of random points should "
+            . "fall inside or outside the radius of the circle with a ratio "
+            . "that when multiplied by 4 gives an approximation for Pi.  The "
+            . "short term result is a test of the most recent 500,000 samples. "
+            . "The long term result is computed over all samples generated since "
+            . "the process being queried began.  The results are graphed as the "
+            . "percentage of error relative to the real value of Pi.  This test "
+            . "is relatively slow to converge on an accurate estimation, but a "
+            . "sustained or persistently diverging inaccuracy in the estimation "
+            . "would indicate a systemic error in the uniformity of the sample "
+            . "values.\n";
+
+        print "${f}_ent_pi_error_short.label Short term\n";
+        print "${f}_ent_pi_error_short.warning -0.97:0.97\n";
+        print "${f}_ent_pi_error_short.critical -2.0:2.0\n";
+        print "${f}_ent_pi_error_short.info Short term error percentage\n";
+
+        print "${f}_ent_pi_error_long.label Long term\n";
+        if (defined $warn{$f}{'Ent8'}) {
+            print "${f}_ent_pi_error_long.warning -0.03:0.03\n";
+            print "${f}_ent_pi_error_long.critical -1.0:1.0\n";
+        }
+        print "${f}_ent_pi_error_long.info Long term error percentage\n";
+    }
+
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.autocorr16_$f\n";
+        print "graph_title BitBabbler $_ serial correlation (16-bit)\n";
+        if (defined $warn{$f}{'Ent16'}) {
+            print "graph_args --base 1000\n";   # Don't inherit parent args
+        } else {
+            print "graph_args --base 1000 HRULE:-0.00008#bbbbff HRULE:0.00008#bbbbff\n";
+        }
+        print "graph_vlabel Serial correlation coefficient\n";
+        print "graph_scale yes\n";
+        print "graph_printf %7.3lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the autocorrelation coefficient for "
+            . "a lag of 1 over the sequence of samples.  This gives a measure "
+            . "of the extent to which each sample is related to the previous one. "
+            . "A perfectly predictable stream will converge on a result of 1.0, "
+            . "and a perfectly unpredictable one will converge on a result of 0."
+            . "The short term result is a test of the 100 million most recently "
+            . "generated samples.  The long term result is computed over all "
+            . "samples generated since the process being queried began.  "
+            . "A sustained divergence away from 0 or values close to +/- 1 "
+            . "indicate a problem that ought to be investigated.\n";
+
+        print "${f}_ent16_autocorr_short.label Short term\n";
+        print "${f}_ent16_autocorr_short.warning -0.00044:0.00044\n";
+        print "${f}_ent16_autocorr_short.critical -0.005:0.005\n";
+        print "${f}_ent16_autocorr_short.info Short term serial correlation\n";
+
+        print "${f}_ent16_autocorr_long.label Long term\n";
+        if (defined $warn{$f}{'Ent16'}) {
+            print "${f}_ent16_autocorr_long.warning -0.00011:0.00011\n";
+            print "${f}_ent16_autocorr_long.critical -0.001:0.001\n";
+        }
+        print "${f}_ent16_autocorr_long.info Long term serial correlation\n";
+    }
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_ent.autocorr_$f\n";
+        print "graph_title BitBabbler $_ serial correlation (8-bit)\n";
+        if (defined $warn{$f}{'Ent8'}) {
+            print "graph_args --base 1000\n";   # Don't inherit parent args
+        } else {
+            print "graph_args --base 1000 HRULE:-0.0002#bbbbff HRULE:0.0002#bbbbff\n";
+        }
+        print "graph_vlabel Serial correlation coefficient\n";
+        print "graph_scale yes\n";
+        print "graph_printf %7.3lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the autocorrelation coefficient for "
+            . "a lag of 1 over the sequence of samples.  This gives a measure "
+            . "of the extent to which each sample is related to the previous one. "
+            . "A perfectly predictable stream will converge on a result of 1.0, "
+            . "and a perfectly unpredictable one will converge on a result of 0."
+            . "The short term result is a test of the 500,000 most recently "
+            . "generated samples.  The long term result is computed over all "
+            . "samples generated since the process being queried began.  "
+            . "A sustained divergence away from 0 or values close to +/- 1 "
+            . "indicate a problem that ought to be investigated.\n";
+
+        print "${f}_ent_autocorr_short.label Short term\n";
+        print "${f}_ent_autocorr_short.warning -0.0078:0.0078\n";
+        print "${f}_ent_autocorr_short.critical -0.009:0.009\n";
+        print "${f}_ent_autocorr_short.info Short term serial correlation\n";
+
+        print "${f}_ent_autocorr_long.label Long term\n";
+        if (defined $warn{$f}{'Ent8'}) {
+            print "${f}_ent_autocorr_long.warning -0.00025:0.00025\n";
+            print "${f}_ent_autocorr_long.critical -0.005:0.005\n";
+        }
+        print "${f}_ent_autocorr_long.info Long term serial correlation\n";
+    }
+
+} #}}}
+
+sub report_ent_values(@)
+{ #{{{
+
+    print "multigraph bb_ent\n";
+    for (@_) {
+        my $f   = clean_fieldname($_);
+        my $ent = $json->[2]{$_}{'Ent8'} if exists $json->[2]{$_};
+
+        if (defined $ent) {
+            print "${f}_ent_entropy_short.value $ent->{'Short'}{'Current'}{'Entropy'}\n";
+            print "${f}_ent_entropy_long.value $ent->{'Long'}{'Current'}{'Entropy'}\n";
+        } else {
+            print "${f}_ent_entropy_short.value U\n";
+            print "${f}_ent_entropy_long.value U\n";
+        }
+    }
+
+
+    for my $n ('', '16') {
+
+        my $e = $n ? 'Ent16' : 'Ent8';
+
+        for (@_) {
+            my $f   = clean_fieldname($_);
+            my $ent = $json->[2]{$_}{$e} if exists $json->[2]{$_};
+
+            print "multigraph bb_ent.chisq${n}_$f\n";
+
+            if (defined $ent) {
+                print "${f}_ent${n}_chisq_short.value $ent->{'Short'}{'Current'}{'Chisq'}\n";
+                print "${f}_ent${n}_chisq_long.value $ent->{'Long'}{'Current'}{'Chisq'}\n";
+            } else {
+                print "${f}_ent${n}_chisq_short.value U\n";
+                print "${f}_ent${n}_chisq_long.value U\n";
+            }
+        }
+
+        for (@_) {
+            my $f   = clean_fieldname($_);
+            my $ent = $json->[2]{$_}{$e} if exists $json->[2]{$_};
+
+            print "multigraph bb_ent.entropy${n}_$f\n";
+
+            if (defined $ent) {
+                print "${f}_ent${n}_entropy_short.value $ent->{'Short'}{'Current'}{'Entropy'}\n";
+                print "${f}_ent${n}_entropy_long.value $ent->{'Long'}{'Current'}{'Entropy'}\n";
+                print "${f}_ent${n}_minentropy_short.value $ent->{'Short'}{'Current'}{'MinEntropy'}\n";
+                print "${f}_ent${n}_minentropy_long.value $ent->{'Long'}{'Current'}{'MinEntropy'}\n";
+            } else {
+                print "${f}_ent${n}_entropy_short.value U\n";
+                print "${f}_ent${n}_entropy_long.value U\n";
+                print "${f}_ent${n}_minentropy_short.value U\n";
+                print "${f}_ent${n}_minentropy_long.value U\n";
+            }
+        }
+
+        for (@_) {
+            my $f   = clean_fieldname($_);
+            my $ent = $json->[2]{$_}{$e} if exists $json->[2]{$_};
+
+            print "multigraph bb_ent.mean${n}_$f\n";
+
+            if (defined $ent) {
+                print "${f}_ent${n}_mean_short.value $ent->{'Short'}{'Current'}{'Mean'}\n";
+                print "${f}_ent${n}_mean_long.value $ent->{'Long'}{'Current'}{'Mean'}\n";
+            } else {
+                print "${f}_ent${n}_mean_short.value U\n";
+                print "${f}_ent${n}_mean_long.value U\n";
+            }
+        }
+
+        for (@_) {
+            my $f   = clean_fieldname($_);
+            my $ent = $json->[2]{$_}{$e} if exists $json->[2]{$_};
+
+            print "multigraph bb_ent.autocorr${n}_$f\n";
+
+            if (defined $ent) {
+                print "${f}_ent${n}_autocorr_short.value $ent->{'Short'}{'Current'}{'Autocorr'}\n";
+                print "${f}_ent${n}_autocorr_long.value $ent->{'Long'}{'Current'}{'Autocorr'}\n";
+            } else {
+                print "${f}_ent${n}_autocorr_short.value U\n";
+                print "${f}_ent${n}_autocorr_long.value U\n";
+            }
+        }
+    }
+
+    for (@_) {
+        my $f   = clean_fieldname($_);
+        my $ent = $json->[2]{$_}{'Ent8'} if exists $json->[2]{$_};
+
+        print "multigraph bb_ent.pi_error_$f\n";
+
+        if (defined $ent) {
+            print "${f}_ent_pi_error_short.value $ent->{'Short'}{'Current'}{'Pi-error'}\n";
+            print "${f}_ent_pi_error_long.value $ent->{'Long'}{'Current'}{'Pi-error'}\n";
+        } else {
+            print "${f}_ent_pi_error_short.value U\n";
+            print "${f}_ent_pi_error_long.value U\n";
+        }
+    }
+
+} #}}}
+
+
+sub report_fips_pass_config(@)
+{ #{{{
+
+    print "multigraph bb_fips_pass\n";
+    print "graph_title BitBabbler FIPS 140-2 pass run length\n";
+    print "graph_vlabel Consecutive tests without failure\n";
+    print "graph_scale no\n";
+    print "graph_printf %6.0lf\n";
+    print "graph_category system\n";
+    print "graph_info This graph shows the run length between FIPS 140-2 test "
+        . "failures.  A correctly working system should expect to see failure of "
+        . "the FIPS 140-2 tests about once in every 1250 blocks tested on average."
+        . "  Occasional runs of much longer than that can be reasonably expected, "
+        . "with a run of 17500 or longer expected about once in 1.2 million tests "
+        . "(about 3.5TB of samples).  A sustained lack of failures would indicate "
+        . "a problem that ought to be investigated.\n";
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "${f}_pass_avg_short.label $_\n";
+        print "${f}_pass_avg_short.info Short term average run of tests without failure\n";
+    }
+
+
+    print "multigraph bb_fips_pass.longest\n";
+    print "graph_title BitBabbler FIPS 140-2 longest pass run\n";
+    print "graph_scale no\n";
+    print "graph_printf %6.0lf\n";
+    print "graph_category system\n";
+    print "graph_info This graph shows the longest run of consecutive blocks "
+        . "without a FIPS 140-2 test failure, since the process being queried "
+        . "began.  A run of 17500 or longer is expected about once in 1.2 million "
+        . "blocks tested (about 3.5TB of samples), but runs longer than that are "
+        . "not impossible, just increasingly rare.  The average rate graph is a "
+        . "better measure of correct operation than this one, but consistently "
+        . "unusual results for the peak run length would be something that ought "
+        . "to be investigated more closely.\n";
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "${f}_pass_max.label $_\n";
+        print "${f}_pass_max.info Longest run of tests without failure\n";
+    }
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_fips_pass.qa_$f\n";
+        print "graph_title BitBabbler $_ FIPS 140-2 pass run length\n";
+        print "graph_scale no\n";
+        print "graph_printf %6.0lf\n";
+        print "graph_category system\n";
+
+        print "${f}_pass_avg_short.label Short term average\n";
+        print "${f}_pass_avg_short.warning 20000\n";
+        print "${f}_pass_avg_short.info Average run of tests without failure\n";
+
+        print "${f}_pass_avg_long.label Long term average\n";
+        print "${f}_pass_avg_long.warning 20000\n";
+        print "${f}_pass_avg_long.info Average run of tests without failure\n";
+    }
+
+} #}}}
+
+sub report_fips_pass_values(@)
+{ #{{{
+
+    print "multigraph bb_fips_pass\n";
+    for (@_) {
+        my $f    = clean_fieldname($_);
+        my $fips = $json->[2]{$_}{'FIPS'} if exists $json->[2]{$_};
+
+        print "${f}_pass_avg_short.value "
+            . ($fips ? $fips->{'Result'}{'PassRuns'}{'Short'} : "U") . "\n";
+    }
+
+    print "multigraph bb_fips_pass.longest\n";
+    for (@_) {
+        my $f    = clean_fieldname($_);
+        my $fips = $json->[2]{$_}{'FIPS'} if exists $json->[2]{$_};
+
+        print "${f}_pass_max.value "
+            . ($fips ? $fips->{'Result'}{'PassRuns'}{'Peak'} : "U") . "\n";
+    }
+
+    for (@_) {
+        my $f    = clean_fieldname($_);
+        my $fips = $json->[2]{$_}{'FIPS'} if exists $json->[2]{$_};
+
+        print "multigraph bb_fips_pass.qa_$f\n";
+
+        if (defined $fips) {
+            print "${f}_pass_avg_short.value $fips->{'Result'}{'PassRuns'}{'Short'}\n";
+            print "${f}_pass_avg_long.value $fips->{'Result'}{'PassRuns'}{'Long'}\n";
+        } else {
+            print "${f}_pass_avg_short.value U\n";
+            print "${f}_pass_avg_long.value U\n";
+        }
+    }
+
+} #}}}
+
+
+sub report_fips_fail_config(@)
+{ #{{{
+
+    print "multigraph bb_fips_fail\n";
+    print "graph_title BitBabbler FIPS 140-2 testing\n";
+    print "graph_vlabel Failed per 1000: long(-) / short(+) term\n";
+    print "graph_scale no\n";
+    print "graph_printf %6.4lf\n";
+    print "graph_category system\n";
+    print "graph_info This graph shows the long and short term failure rates "
+        . "for the FIPS 140-2 tests on each source.  The short term average "
+        . "tracks a window of the last 1000 tests.  A correctly working system "
+        . "should expect to converge on just under 0.8 failures per thousand as "
+        . "the long term trend, with with the short term average varying from 0 "
+        . "with occasional peaks over 5 (as the rare, but not quite infinitely "
+        . "improbable, rough upper bound).  A sustained short term rate greater "
+        . "than that would indicate a systemic failure.\n";
+
+    my $first = 1;
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "${f}_l.label $_\n";
+        print "${f}_l.graph no\n";
+        print "${f}_l.line -0.829:bbbbbb\n" if $first;
+        print "${f}_l.info Long term average rate of failures\n";
+
+        print "${f}_s.label $_\n";
+        print "${f}_s.negative ${f}_l\n";
+        print "${f}_s.line 0.829:bbbbbb:Expected average rate\n" if $first;
+        print "${f}_s.info Short term rolling average rate of failures\n";
+
+        $first = 0;
+    }
+
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_fips_fail.qa_$f\n";
+        print "graph_title BitBabbler $_ average FIPS 140-2 failure rate\n";
+        print "graph_vlabel Failed per 1000: long(-) / short(+) term\n";
+        print "graph_scale no\n";
+        print "graph_printf %6.4lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the long and short term failure rates "
+            . "for the FIPS 140-2 tests.  The short term average tracks a window "
+            . "of the last 1000 tests.  A correctly working system should expect "
+            . "to converge on around 0.8 failures per thousand (of any test) as "
+            . "the long term trend, with with the short term average varying from "
+            . "0 with occasional peaks over 5 (as the rare, but not infinitely "
+            . "improbable, rough upper bound). A sustained short term rate greater "
+            . "than that would indicate a systemic failure. The expected (long term) "
+            . "rates of failure for each individual test are indicated below.\n";
+
+        print "${f}_l.label Failure rate\n";
+        print "${f}_l.graph no\n";
+        print "${f}_l.line -0.829:bbbbbb\n";
+
+        print "${f}_s.label Failure rate\n";
+        print "${f}_s.negative ${f}_l\n";
+        print "${f}_s.line 0.829:bbbbbb:Expected average rate\n";
+        print "${f}_s.info Failure of any test\n";
+        print "${f}_s.warning 5.5\n";
+        print "${f}_s.critical 10.0\n";
+
+
+        print "${f}_monl.label Monobit\n";
+        print "${f}_monl.graph no\n";
+
+        print "${f}_mons.label Monobit\n";
+        print "${f}_mons.negative ${f}_monl\n";
+        print "${f}_mons.info Expect 0.104 per 1000\n";
+
+
+        print "${f}_pokl.label Poker\n";
+        print "${f}_pokl.graph no\n";
+
+        print "${f}_poks.label Poker\n";
+        print "${f}_poks.negative ${f}_pokl\n";
+        print "${f}_poks.info Expect 0.099 per 1000\n";
+
+
+        print "${f}_runl.label Runs\n";
+        print "${f}_runl.graph no\n";
+
+        print "${f}_runs.label Runs\n";
+        print "${f}_runs.negative ${f}_runl\n";
+        print "${f}_runs.info Expect 0.328 per 1000\n";
+
+
+        print "${f}_lrl.label Long run\n";
+        print "${f}_lrl.graph no\n";
+
+        print "${f}_lrs.label Long run\n";
+        print "${f}_lrs.negative ${f}_lrl\n";
+        print "${f}_lrs.info Expect 0.298 per 1000\n";
+
+
+        print "${f}_repl.label Repetition\n";
+        print "${f}_repl.graph no\n";
+
+        print "${f}_reps.label Repetition\n";
+        print "${f}_reps.negative ${f}_repl\n";
+        print "${f}_reps.info Expect to be very rare\n";
+    }
+
+    for (@_) {
+        my $f = clean_fieldname($_);
+
+        print "multigraph bb_fips_fail.peak_$f\n";
+        print "graph_title BitBabbler $_ peak FIPS 140-2 failure rate\n";
+        print "graph_vlabel Max failure rate (per 1000 tests)\n";
+        print "graph_scale no\n";
+        print "graph_printf %6.4lf\n";
+        print "graph_category system\n";
+        print "graph_info This graph shows the worst case failure rates for the "
+            . "FIPS 140-2 tests since the process we are querying began.  These "
+            . "are the peak values seen as the short term average over a window "
+            . "of the last 1000 tests.\n";
+
+        print "${f}_p.label Failure rate\n";
+        print "${f}_p.info Failure of any test\n";
+
+        print "${f}_monp.label Monobit\n";
+        print "${f}_pokp.label Poker\n";
+        print "${f}_runp.label Runs\n";
+        print "${f}_lrp.label Long run\n";
+        print "${f}_repp.label Repetition\n";
+    }
+
+} #}}}
+
+sub report_fips_fail_values(@)
+{ #{{{
+
+    print "multigraph bb_fips_fail\n";
+    for (@_) {
+        my $f    = clean_fieldname($_);
+        my $fips = $json->[2]{$_}{'FIPS'} if exists $json->[2]{$_};
+
+        if (defined $fips) {
+            print "${f}_l.value " . $fips->{'Result'}{'FailRate'}{'Long'} * 1000 . "\n";
+            print "${f}_s.value " . $fips->{'Result'}{'FailRate'}{'Short'} * 1000 . "\n";
+        } else {
+            print "${f}_l.value U\n";
+            print "${f}_s.value U\n";
+        }
+    }
+
+    for (@_) {
+        my $f    = clean_fieldname($_);
+        my $fips = $json->[2]{$_}{'FIPS'} if exists $json->[2]{$_};
+
+        print "multigraph bb_fips_fail.qa_$f\n";
+
+        if (defined $fips) {
+            print "${f}_l.value " . $fips->{'Result'}{'FailRate'}{'Long'} * 1000 . "\n";
+            print "${f}_s.value " . $fips->{'Result'}{'FailRate'}{'Short'} * 1000 . "\n";
+
+            print "${f}_monl.value " . $fips->{'Monobit'}{'FailRate'}{'Long'} * 1000 . "\n";
+            print "${f}_mons.value " . $fips->{'Monobit'}{'FailRate'}{'Short'} * 1000 . "\n";
+
+            print "${f}_pokl.value " . $fips->{'Poker'}{'FailRate'}{'Long'} * 1000 . "\n";
+            print "${f}_poks.value " . $fips->{'Poker'}{'FailRate'}{'Short'} * 1000 . "\n";
+
+            print "${f}_runl.value " . $fips->{'Runs'}{'FailRate'}{'Long'} * 1000 . "\n";
+            print "${f}_runs.value " . $fips->{'Runs'}{'FailRate'}{'Short'} * 1000 . "\n";
+
+            print "${f}_lrl.value " . $fips->{'Long run'}{'FailRate'}{'Long'} * 1000 . "\n";
+            print "${f}_lrs.value " . $fips->{'Long run'}{'FailRate'}{'Short'} * 1000 . "\n";
+
+            print "${f}_repl.value " . $fips->{'Repetition'}{'FailRate'}{'Long'} * 1000 . "\n";
+            print "${f}_reps.value " . $fips->{'Repetition'}{'FailRate'}{'Short'} * 1000 . "\n";
+        } else {
+            print "${f}_l.value U\n";
+            print "${f}_s.value U\n";
+
+            print "${f}_monl.value U\n";
+            print "${f}_mons.value U\n";
+
+            print "${f}_pokl.value U\n";
+            print "${f}_poks.value U\n";
+
+            print "${f}_runl.value U\n";
+            print "${f}_runs.value U\n";
+
+            print "${f}_lrl.value U\n";
+            print "${f}_lrs.value U\n";
+
+            print "${f}_repl.value U\n";
+            print "${f}_reps.value U\n";
+        }
+    }
+
+    for (@_) {
+        my $f    = clean_fieldname($_);
+        my $fips = $json->[2]{$_}{'FIPS'} if exists $json->[2]{$_};
+
+        print "multigraph bb_fips_fail.peak_$f\n";
+
+        if (defined $fips) {
+            print "${f}_p.value "    . $fips->{'Result'}{'FailRate'}{'Peak'} * 1000 . "\n";
+            print "${f}_monp.value " . $fips->{'Monobit'}{'FailRate'}{'Peak'} * 1000 . "\n";
+            print "${f}_pokp.value " . $fips->{'Poker'}{'FailRate'}{'Peak'} * 1000 . "\n";
+            print "${f}_runp.value " . $fips->{'Runs'}{'FailRate'}{'Peak'} * 1000 . "\n";
+            print "${f}_lrp.value "  . $fips->{'Long run'}{'FailRate'}{'Peak'} * 1000 . "\n";
+            print "${f}_repp.value " . $fips->{'Repetition'}{'FailRate'}{'Peak'} * 1000 . "\n";
+        } else {
+            print "${f}_p.value U\n";
+            print "${f}_monp.value U\n";
+            print "${f}_pokp.value U\n";
+            print "${f}_runp.value U\n";
+            print "${f}_lrp.value U\n";
+            print "${f}_repp.value U\n";
+        }
+    }
+
+} #}}}
+
+
+sub report_config()
+{ #{{{
+
+    my $persist = $ENV{'persist_devices'} || "no";
+    my @sources;
+
+    @sources = restore_state() if $persist eq "yes";
+
+    eval {
+        get_ids();
+        @sources = unique_list(@sources, @{$json->[2]});
+    };
+
+    if (exists $ENV{'always_ignore'}) {
+        my %ignore;
+        my @remains;
+
+        @ignore{split(' ',$ENV{'always_ignore'})} = ();
+
+        for (@sources) {
+            push(@remains, $_) unless exists $ignore{$_};
+        }
+
+        @sources = @remains;
+    }
+
+    save_state(@sources) if $persist eq "yes";
+
+    @sources = unique_list(@sources, split(' ',$ENV{'always_include'})) if $ENV{'always_include'};
+
+    report_bitrate_config(@sources);
+    report_ent_config(@sources);
+    report_fips_pass_config(@sources);
+    report_fips_fail_config(@sources);
+
+} #}}}
+
+sub report_values()
+{ #{{{
+
+    get_stats();
+
+    my @sources;
+
+    if (($ENV{'persist_devices'} || "") eq "yes") {
+        @sources = restore_state();
+    } else {
+        @sources = keys %{$json->[2]};
+
+        if (exists $ENV{'always_ignore'}) {
+            my %ignore;
+            my @remains;
+
+            @ignore{split(' ',$ENV{'always_ignore'})} = ();
+
+            for (@sources) {
+                push(@remains, $_) unless exists $ignore{$_};
+            }
+
+            @sources = @remains;
+        }
+    }
+
+    @sources = unique_list(@sources, split(' ',$ENV{'always_include'})) if $ENV{'always_include'};
+
+    report_bitrate_values(@sources);
+    report_ent_values(@sources);
+    report_fips_pass_values(@sources);
+    report_fips_fail_values(@sources);
+
+} #}}}
+
+
+if (!defined $ARGV[0]) {
+    report_values();
+}
+elsif ($ARGV[0] eq "config") {
+    report_config();
+}
+elsif ($ARGV[0] eq "autoconf") {
+    # If the package providing this is installed, we presume you're going to
+    # want it enabled if munin-node is also installed.  We could make this a
+    # bit more nuanced if this script is ever installed on a lot of systems
+    # where that isn't likely to be true.
+    print "yes\n";
+}
+
+# vi:sts=4:sw=4:et:foldmethod=marker

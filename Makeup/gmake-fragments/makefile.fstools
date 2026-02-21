@@ -1,0 +1,574 @@
+# makeup filesystem tools.
+#
+# This file contains commonly reusable makefile portions for
+# performing operations on the file system in a consistent manner.
+#
+#  Copyright 2004 - 2017, Ron <ron@debian.org>
+#
+# This file is distributed under the terms of the GNU GPL version 2.
+#
+# As a special exception to the GPL, it may be distributed without
+# modification as a part of a program using a makeup generated build
+# system, under the same distribution terms as the program itself.
+
+
+# The boilerplate macros here are divided into two preliminary
+# sets, MACRO_Function's and MACRO_Template's.  Macro _Function's
+# are aliases for a set of commands in a rule.  They are a make
+# friendly way to provide the equivalent of parametric shell
+# functions for common commands in makefile rules.
+#
+# Macro _Template's are parametric boilerplate for complete
+# makefile rules.  They must be passed to GNU make's $(eval)
+# function to be parsed as rules for manipulating a target.
+#
+# Macro _Template_Function's are like MACRO_Functions except they
+# have an additional level of internal escaping for shell variables
+# on the expectation that they will be expanded twice before being
+# presented to the shell.
+#
+# Function macros typically should not rely on the user to provide
+# their final termination, since a) You may never really know what
+# that should be.  b) If the macro expands to nothing, you don't
+# have to worry about what to do with a hanging ';' or similar.
+#
+# Shell commands that always expect at least one command can
+# terminate a single $(call SOME_Function,...):; as shown.
+
+
+EMPTY =
+WHITESPACE = $(EMPTY) $(EMPTY)
+
+
+# Debugging
+# ------------------------------------------------------------------
+
+# $(VERBOSE_ANNOUNCE)
+# May be used as a command to enable simple tracing through makefile rules.
+# You should define MAKEUP_VERBOSE to be non-null to turn up the noise.
+define VERBOSE_ANNOUNCE
+    @if [ -n "$(MAKEUP_VERBOSE)" ]; then echo "--> Updating target: $@"; fi;
+endef
+
+
+# Directory manipulation.
+# ------------------------------------------------------------------
+
+# $(call CREATE_DIR_Function,_dirname)
+# Test for the existance of _dirname and create it (along with
+# any missing intermediate directories) if neccessary.
+define CREATE_DIR_Function
+    if [ ! -e "$(1)" ]; then		\
+      echo "  Creating dir: $(1)";	\
+      mkdir -p "$(1)";			\
+    fi;
+endef
+
+# $(call CREATE_DIRS_Function,_dirnames)
+# Test for the existance of all directories in _dirnames and create them
+# (along with any missing intermediate directories) if neccessary.
+define CREATE_DIRS_Function
+    for d in $(1); do			\
+        $(call CREATE_DIR_Function,$$d)	\
+    done;
+endef
+
+
+# File manipulation.
+# ------------------------------------------------------------------
+
+
+# $(call SRCPATH_Function,_path)
+# Will strip the '$srcdir/' component from _path to return a file path
+# that is relative to the top source dir.
+SRCPATH_Function = $(subst $(top_srcdir)/,,$(1))
+
+# $(call STAMP_Function,_stamp)
+# Will touch _stamp, creating it and any missing path components.
+define STAMP_Function
+    if [ -n "$(1)" ]; then				\
+	stamp_dir="$$(dirname $(1))";			\
+	$(call CREATE_DIR_Function,$$stamp_dir)		\
+	touch "$(1)";					\
+    fi;
+endef
+
+# $(call REMOVE_STAMP_Function,_stamp)
+# Will remove _stamp and prune any empty path components that remain.
+define REMOVE_STAMP_Function
+    if [ -n "$(1)" ]; then					\
+	stamp_dir="$$(dirname $(1))";				\
+	$(RM) "$(1)";						\
+	if [ -e "$$stamp_dir" ]; then				\
+	    rmdir -p "$$stamp_dir" > /dev/null 2>&1 || true;	\
+	fi;							\
+    fi;
+endef
+
+
+# $(call INSTALL_DATA_Function,_files,_installdir,_srcdir,_label)
+# Helper function to install a list of _files, initially rooted at _srcdir
+# to _installdir.  The _label is a purely informative tag to show to the
+# user during installation.
+define INSTALL_DATA_Function
+    set -e;						\
+    if [ -n "$(1)" ]; then				\
+        for f in $(1); do				\
+            dest="$(2)/$$(dirname $$f)";		\
+            destdir="$${dest%%/.}";			\
+            $(call CREATE_DIR_Function,$${destdir})	\
+            echo "    Installing $(4) : $$f";		\
+            $(INSTALL_DATA) "$(3)/$$f" "$${destdir}";	\
+        done;						\
+    fi;
+endef
+
+# $(call INSTALL_DATA_Template_Function,_files,_installdir,_srcdir,_label)
+# This is the equivalent of INSTALL_DATA_Function for use within templates.
+define INSTALL_DATA_Template_Function
+    set -e;							\
+    if [ -n "$(1)" ]; then					\
+        for f in $(1); do					\
+            dest="$(2)/$$$$(dirname $$$$f)";			\
+            destdir="$$$${dest%%/.}";				\
+            $(call CREATE_DIR_Function,$$$${destdir})		\
+            echo "    Installing $(4) : $$$$f";			\
+            $(INSTALL_DATA) "$(3)/$$$$f" "$$$${destdir}";	\
+        done;							\
+    fi;
+endef
+
+# $(call INSTALL_DATA_RECURSIVE_Function,_files,_installdir,_srcdir,_label)
+# Helper function to install a list of _files, initially rooted at _srcdir
+# to _installdir.  The _label is a purely informative tag to show to the
+# user during installation.  This is identical to INSTALL_DATA_Function,
+# except it may also include directories in the list of _files.  They will
+# be copied to the installdir preserving any substructure, except for hidden
+# files which will be treated according to the globbing policy of the local
+# shell (which is usually to ignore them) unless explicitly named in _files.
+#
+# Note the subshell which keeps scope for f and i.
+define INSTALL_DATA_RECURSIVE_Function
+    set -e;						\
+    ( set -e;						\
+      do_install() {					\
+        if [ -z "$$1" ]; then return; fi;		\
+        ( for f in $$1; do				\
+            if [ -d "$$3/$$f" ]; then			\
+		echo "    $${4}Installing $(4) subdir : $$f"; \
+                for i in $$(cd "$$3"/"$$f" && ls -d * 2> /dev/null); do \
+                    do_install "$$i" "$$2/$$f" "$$3/$$f" ". $$4"; \
+                done;					\
+	    else					\
+                dest="$$2/$$(dirname $$f)";		\
+                destdir="$${dest%%/.}";			\
+                $(call CREATE_DIR_Function,$${destdir})	\
+                echo "    $${4}Installing $(4) : $$f";	\
+                $(INSTALL_DATA) "$$3/$$f" "$${destdir}"; \
+	    fi;						\
+          done;						\
+	)						\
+      };						\
+      do_install "$(1)" "$(2)" "$(3)";			\
+    )
+endef
+
+
+# $(call MERGE_FILES_Function,_files,_srcdir,_slavedir,_stamp,_timeout)
+# Merge two file trees
+#
+# Parameters:
+#		$1 - list of filenames to merge
+#		$2 - file source (master) dir
+#		$3 - file destination (slave) dir
+#		$4 - slave stamp file
+#		$5 - user input timeout.
+#
+# If the slave stamp file name is provided files will only be merged if the
+# master is both different from the slave and newer than the slave stamp file.
+# (So you can refuse a diff and not be notified again if something unrelated
+# changes).  If the optional _timeout is supplied, prompts for user input will
+# wait up to that many seconds before defaulting to ignore the action prompted
+# for.  If not supplied, such prompts will wait indefinitely.
+#
+# We need to always run this one under bash.  We may use a timeout in read,
+# which isn't really replaceable.  and so while we are stuck with it, we may
+# as well also keep using the pattern substitution, and test -nt, which dash
+# manages to break in the most amazingly braindead way you could never imagine.
+#
+# FIXME:  Check for diff and use PAGER instead of hard coded less.
+define MERGE_FILES_Function
+  if [ -z "$$BASH" ]; then							\
+    echo "$@: Uh Oh, trouble in $(THIS_MAKEFILE)";				\
+    echo "$@: dash is too retarded to run MERGE_FILES_Function for $(1)";	\
+    echo "$@: you need to set SHELL = bash for this target";			\
+    echo;									\
+    exit 1;									\
+  fi;										\
+  (										\
+    if [ -n "$(1)" ]; then							\
+	if [ -d "$(2)" ] && [ -d "$(3)" ]; then					\
+	    if [ -n "$(5)" ]; then						\
+		timeout="-t $(5)";						\
+	    else								\
+		timeout='';							\
+	    fi;									\
+	    for f in $(1); do							\
+		if [ -n "$(4)" ]; then						\
+		    merge_stamp="$(4)$${f/\//_}";				\
+		fi;								\
+		if [ ! -e "$(3)/$$f" ]; then					\
+		    echo " ++ Adding: $(patsubst ./%,%,$(3))/$$f";		\
+		    cp -a "$(2)/$$f" "$(3)/$$f";				\
+		elif [ "$(2)/$$f" -nt "$$merge_stamp" ]; then			\
+		    if ! diff "$(2)/$$f" "$(3)/$$f" > /dev/null 2>&1 ; then	\
+			merge_done=0;						\
+			diff_done=0;						\
+			while [ $$merge_done -ne 1 ]; do			\
+			    echo -n "$$f has changed.  Diff, Ignore or Replace ";\
+			    if [ $$diff_done -ne 1 ]; then			\
+				echo -n "[D/i/r] : ";				\
+			    else						\
+				echo -n "[d/I/r] : ";				\
+			    fi;							\
+			    merge_cmd='';					\
+			    if ! read $$timeout merge_cmd; then			\
+				echo "No response - Ignored.";			\
+				merge_cmd=Ignore;				\
+			    fi;							\
+			    if [ -z "$$merge_cmd" ]; then			\
+				if [ $$diff_done -ne 1 ]; then			\
+				    merge_cmd=Diff;				\
+				else						\
+				    merge_cmd=Ignore;				\
+				fi;						\
+			    fi;							\
+			    case "$$merge_cmd" in				\
+			    D*|d*)						\
+				VIMDIFF=/usr/bin/vimdiff;			\
+				if [ -x $$VIMDIFF ]; then			\
+				    $$VIMDIFF "$(2)/$$f" "$(3)/$$f";		\
+				else						\
+				    diff -u "$(2)/$$f" "$(3)/$$f" | less;	\
+				fi;						\
+				diff_done=1;					\
+				;;						\
+			    I*|i*)						\
+				$(call STAMP_Function,$$merge_stamp)		\
+				merge_done=1;					\
+				;;						\
+			    R*|r*)						\
+				cp -a "$(2)/$$f" "$(3)/$$f";			\
+				$(call REMOVE_STAMP_Function,$$merge_stamp)	\
+				merge_done=1;					\
+				;;						\
+			    esac;						\
+			done;							\
+		    else							\
+			if [ -n "$(MAKEUP_VERBOSE)" ] ; then			\
+			    echo "    $(2)/$$f has no new content to merge.";	\
+			fi;							\
+			$(call STAMP_Function,$$merge_stamp)			\
+		    fi;								\
+		elif [ -n "$(MAKEUP_VERBOSE)" ] ; then				\
+		    echo "    $(2)/$$f is suppressed by ignore stamp.";		\
+		fi;								\
+	    done;								\
+	else									\
+	    echo "*** attempt to merge non existent dirs";			\
+	    echo "   $(2)";							\
+	    echo "   $(3)";							\
+	    false;								\
+	    exit;								\
+	fi;									\
+    fi;										\
+  );
+endef
+
+
+# Goals, and where to score them
+# ------------------------------------------------------------------
+
+ifneq ($(findstring Y,$(MAKEUP_VERBOSE)),)
+  MAKEUP_EXTRA_DEBUG = --debug=v,i,m
+endif
+
+
+# $(call NEXT_GOAL_Function, _file, _target)
+# This function will try to create _file if it does not exist
+# and then attempt to make the goal _target from it.
+#
+# Note that we strip any leading ./ from a makefile name before
+# invoking it, since in gmake 3.80 nothing other than a pattern
+# starting with % will match it when it tries to update itself.
+# If invoked via: make -f ./foo/bar, attempts to update the
+# makefile itself will match "%/foo/bar :", or "%/bar :", but not
+# "./foo/bar :", nor "./foo/% :", nor even "$(THIS_MAKEFILE) :".
+define NEXT_GOAL_Function
+    if [ -n '$(MAKEUP_VERBOSE)' ]; then						\
+        echo "[$(MAKELEVEL)] requires $(2) from $(1)";				\
+    fi;										\
+    if [ ! -e $(1) ]; then							\
+        $(MAKE) $(MAKEUP_EXTRA_DEBUG) --no-print-directory			\
+		-f $(SYS_MAKEUP_GMAKE_DIR)/makefile.makeup $(1);		\
+    fi;										\
+    $(MAKE) $(MAKEUP_EXTRA_DEBUG) --no-print-directory -f $(patsubst ./%,%,$(1)) $(2);
+endef
+
+
+# $(eval $(GET_KBUILD_TARGETS_Template))
+# Scans the config for KBUILD targets, building a list of target names in
+# KBUILD_TARGETS, an array of KBUILD_TARGET_DIR_$(target) paths, and a list
+# if the target config files in KBUILD_TARGET_FILES.  It will warn (and not
+# add) a target if its $(target)_DIR parameter is not defined.
+#
+# We do a fair bit of work here, so if this proves to be slow with long lists
+# of target files, then it shouldn't be too hard to cache this data in a file
+# and only update it when the target files change, but for now keep it 'simple'
+define GET_KBUILD_TARGETS_Template
+    $(if $(KBUILD_TARGET_FILES), $(warning WARNING: KBUILD_TARGET_FILES already set) \
+				 $(eval KBUILD_TARGET_FILES =))
+    KBUILD_TARGETS = $(strip						       \
+		     $(foreach f,$(wildcard $(MAKEUP_CONFIG_DIR)/target.*),    \
+		      $(foreach t,$(patsubst $(MAKEUP_CONFIG_DIR)/target.%,%,$(f)),\
+		       $(if $(shell grep -qE "^[[:space:]]*$(t)_TYPE[[:space:]]*[: ]=[[:space:]]*KBUILD" $(f)\
+				    && echo "got-one"),			       \
+			$(eval d = $(shell awk -F"([ \t]*=[ \t]*|[ \t]+$$)" '$$1 == p {print $$2}' p=$(t)_DIR $(f)))\
+			$(if $(d), $(eval KBUILD_TARGET_DIR_$(t) = $(d))       \
+				   $(eval KBUILD_TARGET_FILES += $(f)) $(t),   \
+			 $(warning WARNING: $(f): KBUILD target without $(t)_DIR))))))
+endef
+
+
+# Standard rule templates for mapping system makeup to a local project
+# --------------------------------------------------------------------
+
+# $(eval $(IMPORT_MAKEUP_RULE_Template))
+# This template creates an implicit rule to update makeup boilerplate
+# from a system installation.
+define IMPORT_MAKEUP_RULE_Template
+$(MAKEUP_DIR)/% : $(SYS_MAKEUP_DIR)/%
+	$$(VERBOSE_ANNOUNCE)
+	@( set -e;								\
+	   if [ -e "$$<" ] ; then						\
+		$$(call CREATE_DIR_Function,$$(@D))				\
+		$$(call MERGE_FILES_Function,$$*,$(SYS_MAKEUP_DIR),$(MAKEUP_DIR),$(MAKEUP_STAMP_DIR)/ignored-update--) \
+	   elif [ "$$(<F)" = "Makeup.conf" ] ; then				\
+		if [ -n "$(MAKEUP_VERBOSE)" ] ; then				\
+		    echo "*** Ignoring absent $$<";				\
+		fi;								\
+	   else									\
+		echo "*** Cannot create $$@ from non-existent $$<";		\
+		exit 1;								\
+	   fi;									\
+	 )
+
+$(MAKEUP_DIR)/% : SHELL = bash
+endef
+
+# $(eval $(IMPORT_MAKEUP_TARGETS_Template))
+# This template takes the implicit rule from IMPORT_MAKEUP_RULE_Template and
+# makes it a pattern rule for the possible targets given the current contents
+# of the system makeup installation.
+define IMPORT_MAKEUP_TARGETS_Template
+
+  $(patsubst $(SYS_MAKEUP_DIR)/%,$(MAKEUP_DIR)/%,				\
+             $(wildcard $(addprefix $(SYS_MAKEUP_AC_DIR)/,configure.* acsubst.* *.m4) \
+                        $(SYS_MAKEUP_GMAKE_DIR)/makefile.*)			\
+             $(SYS_MAKEUP_DIR)/Makeup.conf) :					\
+  $(IMPORT_MAKEUP_RULE_Template)
+
+endef
+
+
+# $(eval $(SYS_MAKEUP_RULE_Template))
+# This template creates an implicit rule to stop the search for ways
+# to update system makeup files.  It doesn't add much except for cleaning
+# up the debug logs by specifying exactly what we mean instead of running
+# a search that we presume should fail.
+define SYS_MAKEUP_RULE_Template
+  $(SYS_MAKEUP_DIR)/% :
+	$(VERBOSE_ANNOUNCE)
+	@echo "*** Error attempting to create non-existent '$$@'"
+endef
+
+# $(eval $(SYS_MAKEUP_TARGETS_Template))
+# A specialisation of the SYS_MAKEUP_RULE_Template that makes it a
+# pattern rule for the current contents of the system makeup install.
+# We don't give a warning for a missing system Makeup.conf.
+define SYS_MAKEUP_TARGETS_Template
+
+  $(wildcard $(addprefix $(SYS_MAKEUP_AC_DIR)/,configure.* acsubst.* *.m4) \
+             $(SYS_MAKEUP_GMAKE_DIR)/makefile.*) :			   \
+  $(SYS_MAKEUP_RULE_Template)
+
+  $(SYS_MAKEUP_DIR)/Makeup.conf : ;
+endef
+
+
+# $(eval $(MAKEUP_CONFIG_RULE_Template))
+# This template creates an implicit rule to stop the search for ways
+# to update makeup config files.  It doesn't add much except for cleaning
+# up the debug logs by specifying exactly what we mean instead of running
+# a search that we presume should fail.
+define MAKEUP_CONFIG_RULE_Template
+$(MAKEUP_CONFIG_DIR)/% :
+	$(VERBOSE_ANNOUNCE)
+	@echo "*** Error attempting to create non-existent config file $@";
+	@exit 1;
+endef
+
+# $(eval $(MAKEUP_CONFIG_RULE_Template))
+# A specialisation of the MAKEUP_CONFIG_RULE_Template that makes it a
+# pattern rule for the current contents of the makeup user config dir.
+define MAKEUP_CONFIG_TARGETS_Template
+
+  $(wildcard $(addprefix $(MAKEUP_CONFIG_DIR)/,configure.* acsubst.* acfile.* target.*)) : \
+  $(MAKEUP_CONFIG_RULE_Template)
+
+endef
+
+
+# $(eval $(UPDATE_MAKEUP_Template))
+# A one stop template macro for makefiles which may import files
+# from a system installation of makeup on demand.
+define UPDATE_MAKEUP_Template
+
+  $(IMPORT_MAKEUP_TARGETS_Template)
+  $(SYS_MAKEUP_TARGETS_Template)
+  $(MAKEUP_CONFIG_TARGETS_Template)
+
+endef
+
+
+# Makeup config file parsing
+# ------------------------------------------------------------------
+
+# Makeup config files consist purely of parameter assignments of
+# the form PARAM = VALUE.  Thus they can be included directly as
+# makefile fragments and are trivially parsed by other tools.
+
+# $(call SET_PARAM_Function,_param,_value,_file)
+# Will search _file for a line that begins "_param =" and substitute
+# _value as the remainder of the line following '='.  If such a line
+# does not exist in the file, one will be appended in the form
+# _param = _value
+define SET_PARAM_Function
+    if awk 'BEGIN { FS = "([ \t]*=[ \t]*|[ \t]+$$)"; OFS = " = ";	\
+                    replaced = "no" };					\
+            $$1 == PARAM { $$0 = PARAM " = " VALUE; replaced = "yes"; };\
+            { print $$0 };						\
+            END { if ( replaced == "no" ) print PARAM " = " VALUE; }'	\
+            PARAM="$(1)" VALUE="$(2)" $(3) > $(3).new;			\
+    then								\
+        mv $(3).new $(3);						\
+    else								\
+        rm -f $(3).new;							\
+    fi;
+endef
+
+
+# $(call APPEND_PARAM_VAL_Function,_param,_value,_file)
+# Similar to SET_PARAM_Function, but it will append _value to _param
+# if it already exists in _file instead of stomping its current value.
+define APPEND_PARAM_VAL_Function
+    if awk 'BEGIN { FS = "([ \t]*=[ \t]*|[ \t]+$$)"; OFS = " = ";	\
+                    replaced = "no" };					\
+            $$1 == PARAM { $$0 = $$0 " " VALUE; replaced = "yes"; };	\
+            { print $$0 };						\
+            END { if ( replaced == "no" ) print PARAM " = " VALUE; }'	\
+            PARAM="$(1)" VALUE="$(2)" $(3) > $(3).new;			\
+    then								\
+        mv $(3).new $(3);						\
+    else								\
+        rm -f $(3).new;							\
+    fi;
+endef
+
+
+# $(call REMOVE_PARAM_VAL_Function,_param,_value,_file)
+# Remove any portion matching _value from the assignment to _param
+# in _file.
+define REMOVE_PARAM_VAL_Function
+    if awk 'BEGIN { FS = "([ \t]*=[ \t]*|[ \t]+$$)"; OFS = " = " };	\
+            $$1 == PARAM { for( i = 2; i <= NF; i++ )			\
+			  { sub(VALUE, "", $$i);			\
+			    gsub(/ +/, " ", $$i);			\
+			  };						\
+			};						\
+            { print $$0 };'						\
+            PARAM="$(1)" VALUE="$(2)" $(3) > $(3).new;			\
+    then								\
+        mv $(3).new $(3);						\
+    else								\
+        rm -f $(3).new;							\
+    fi;
+endef
+
+
+# $(call COMMENT_DEAD_PARAMS_Function,_params,_file)
+# Will comment out any parameter that is NOT in the _params list.
+# Mainly used when changing some option which is likely to invalidate
+# some or all preexisting parameters.  We could just nuke them, but this
+# is probably better than losing them due to a keyboard or brain fumble.
+# We also could just leave them there and mostly ignore them, which is what
+# we used to do, but that's suboptimal too and could come back to bite us.
+define COMMENT_DEAD_PARAMS_Function
+    if awk 'BEGIN { FS = "([ \t]*=[ \t]*|[ \t]+$$)"; OFS = " = "; }	\
+            $$1 !~ /(^[ \t]*#.*)$(subst $(WHITESPACE),,$(foreach p,$(1),|(^$(p))))/ \
+	    { $$0 = "# " $$1 " = " $$2; };				\
+            { print $$0 }'						\
+	    $(2) > $(2).new;						\
+    then								\
+        mv $(2).new $(2);						\
+    else								\
+        rm -f $(2).new;							\
+    fi;
+endef
+
+
+# Makeup interactive help support
+# ------------------------------------------------------------------
+
+# $(eval $(MAKEUP_HELP_Template))
+# Create targets to support 'make help' and 'make help-foo' for
+# inline makeup documentation.
+define MAKEUP_HELP_Template
+help :
+	@( echo;							\
+	   echo "  Help is available for the following topics:";	\
+	   echo;							\
+	   $$(foreach t,$$(MAKEUP_HELP),printf "    %-10s - %s\n" "$$(t)" "$$(MAKEUP_HELP_BRIEF_$$(t))";) \
+	   echo;							\
+	   echo "Use 'make help-<topic>' for further information.";	\
+	   echo;							\
+	 )
+
+help-% : force-update
+	$$(VERBOSE_ANNOUNCE)
+
+	@$$(if $$(MAKEUP_HELP_$$*),					\
+	    echo;							\
+	    echo "  --- Makeup $$* ---";				\
+	    echo;							\
+	    $$(MAKEUP_HELP_$$*);					\
+	    echo;,							\
+	    echo;							\
+	    echo "  No help for: '$$*'";				\
+	    echo "  Use 'make help' for a list of topics.";		\
+	    echo;							\
+	   )
+
+delegatedhelp-% : force-update
+	$$(VERBOSE_ANNOUNCE)
+
+	@$$(if $$(MAKEUP_HELP_$$*),					\
+	    $$(MAKEUP_HELP_$$*);					\
+	    echo;,							\
+	    echo "  No help for: '$$*' in $(THIS_MAKEFILE)";		\
+	    echo "  Please report this to Ron <ron@debian.org>.";	\
+	    echo "  Use 'make help' for a list of topics.";		\
+	    echo;							\
+	   )
+endef
+

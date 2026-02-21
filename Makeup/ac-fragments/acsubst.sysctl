@@ -1,0 +1,7 @@
+# @configure_input@
+#
+# Makeup makefile boilerplate for sysctl configuration support.
+# Copyright 2018, Ron Lee <ron@debian.org>
+
+SYSCTL_DIR = @SYSCTL_DIR@
+

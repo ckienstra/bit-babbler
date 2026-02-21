@@ -1,0 +1,9 @@
+# @configure_input@
+#
+# Makeup makefile boilerplate for udev.
+# Copyright 2010 - 2018, Ron Lee <ron@debian.org>
+
+UDEV_CPPFLAGS   = @UDEV_CPPFLAGS@
+UDEV_LIBS       = @UDEV_LIBS@
+UDEV_RULES_DIR  = @UDEV_RULES_DIR@
+
