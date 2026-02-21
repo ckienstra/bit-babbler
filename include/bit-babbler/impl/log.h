@@ -11,6 +11,7 @@
 #define _BBIMPL_LOG_H
 
 #include <bit-babbler/log.h>
+#include <time.h>
 
 
 namespace BitB
@@ -314,7 +315,7 @@ namespace BitB
         // It's also tricky to actually test for that, since on systems where it
         // doesn't work, there is no clear indication except perhaps a segfault.
         // So we'll be conservative and only use it where we know it really works.
-        size_t  size = strftime( NULL, MAX_LEN, format, &tm );
+        size_t  size = strftime((char[MAX_LEN]){}, MAX_LEN, format, &tm );
 
        #else
 
