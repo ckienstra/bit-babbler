@@ -1,0 +1,45 @@
+name: Build and Release Debian Package
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on tags like v1.0.0
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    permissions:
+      contents: write
+
+    steps:
+      - name: Install git and certificates
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build and optional dependencies
+        run: |
+          apt-get install -y build-essential pkg-config libusb-1.0-0-dev \
+            libudev-dev autoconf automake bison flex gettext \
+            debhelper fakeroot libjson-xs-perl \
+            munin-node libvirt-clients acl
+
+      - name: Build all Debian packages (Source, Binary, and Debug)
+        run: |
+          # Removed the -b flag so it builds the .dsc and source tarballs too
+          dpkg-buildpackage -us -uc
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ../*.deb
+            ../*.dsc
+            ../*.tar.*
+            ../*.buildinfo
+            ../*.changes
