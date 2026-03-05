@@ -67,3 +67,11 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Build artifacts
+/build
+
+# VSCode configuration
+.vscode/*
+!.vscode/tasks.json
+!.vscode/c_cpp_properties.json

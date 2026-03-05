@@ -1,0 +1,30 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "configure",
+            "type": "shell",
+            "command": "mkdir -p build && cd build && if [ ! -f 'Makefile' ]; then ../configure; fi",
+            "problemMatcher": [],
+            "group": "build",
+            "detail": "Create build directory and run configure if needed."
+        },
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "make",
+            "options": {
+                "cwd": "${workspaceFolder}/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "dependsOn": ["configure"],
+            "detail": "Compile the project in the build directory."
+        }
+    ]
+}
