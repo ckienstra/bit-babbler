@@ -4,7 +4,7 @@
         {
             "label": "configure",
             "type": "shell",
-            "command": "mkdir -p build && cd build && if [ ! -f 'Makefile' ]; then ../configure; fi",
+            "command": "mkdir -p build && cd build && if [ ! -f 'config.status' ]; then ../configure; fi",
             "problemMatcher": [],
             "group": "build",
             "detail": "Create build directory and run configure if needed."
