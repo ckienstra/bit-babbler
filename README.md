@@ -73,7 +73,44 @@ systemctl start seedd.service
 systemctl status seedd.service
 ```
 
-At this point, you should be all set to use your BitBabbler. More interesting details about the `seedd` service can be found on the [original author's blog](http://bitbabbler.org/blog.html#:~:text=Two%20households,%20both%20alike%20in%20dignity).
+At this point, you should be all set to use your BitBabbler. More interesting details about the `seedd` service can be found on the [original author's blog](http://bitbabbler.org/blog.html#:~:text=Two%20households,%20both%20alike%20in%20dignity). After the seedd daemon is running, you can also compare the quality of the BitBabbler's entropy against your other sources with the `bbctl` utility:
+
+```bash
+bbctl --stats
+```
+
+---
+
+## Development and IDE Integration
+
+For the best development experience with IntelliSense in VS Code, it is recommended to generate a `compile_commands.json` file. This file provides the editor with compiler commands used to build the project.
+
+This project is configured to use the C/C++ Extension for VS Code, which will automatically use this file if it exists.
+
+### Prerequisites
+
+-   [bear](https://github.com/rizsotto/bear): A tool to generate compilation databases for `make`-based build systems.
+-   On Debian Trixie, this should be as easy as `sudo apt install bear`
+
+### Generating the Compilation Database
+
+To generate the `compile_commands.json` file, run the following commands:
+
+```bash
+# Ensure the project is clean from the root directory
+make clean
+
+# Enter the ./build directory whose output is excluded from git using .gitignore
+cd ./build
+
+# Run the configure script if it hasn't been run
+../configure
+
+# Use bear to wrap the build process
+bear -- make
+```
+
+A compilation database will be created at `build/compile_commands.json`. It's a good idea to open the file and ensure it's populated. One fuzzy way to check if IntelliSense is reading the file propertly is to open `c_cpp_properties.json` in VSCode and ensure it shows no erroneous squiggles on the `compileCommands` attribute.
 
 ---
 
