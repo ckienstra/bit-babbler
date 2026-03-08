@@ -69,6 +69,8 @@ check_sysctl_conf()
 
 case "$1" in
     install|upgrade)
+	addgroup --quiet --system bit-babbler || true
+
 	# Version 0.8 adds /etc/bit-babbler/seedd.conf, replacing the previous
 	# daemon configuration options which were set in /etc/default/seedd.
 	dpkg --compare-versions -- "$2" ge-nl '0.8~' || check_seedd_conf

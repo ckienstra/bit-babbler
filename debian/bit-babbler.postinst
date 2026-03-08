@@ -101,8 +101,6 @@ migrate_sysctl_conf()
 
 case "$1" in
     configure)
-	addgroup --quiet --system bit-babbler
-
 	# Version 0.8 adds /etc/bit-babbler/seedd.conf, replacing the previous
 	# daemon configuration options which were set in /etc/default/seedd.
 	dpkg --compare-versions -- "$2" ge-nl '0.8~' || migrate_seedd_conf

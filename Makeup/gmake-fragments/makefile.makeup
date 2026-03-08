@@ -860,7 +860,15 @@ define MAKEUP_HELP_install
 endef
 
 # Install all default targets.
+# The bit-babbler group is needed for udev.
 install :
+	@echo "Checking for bit-babbler group"
+	@if [ "$$(id -u)" = "0" ]; then \
+		if ! getent group bit-babbler >/dev/null; then \
+			echo "Creating bit-babbler system group"; \
+			groupadd -r bit-babbler; \
+		fi; \
+	fi
 	@$(RM) "$(top_builddir)/__need_{ldconfig,setup}"
 	@+$(call MAKEUP_FOR_EACH,$(PACKAGE_TARGETS),install)
 
